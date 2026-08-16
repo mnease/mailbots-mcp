@@ -34,15 +34,16 @@ Add a stdio server in `~/.grok/config.toml` (or `.grok/config.toml` in a repo), 
 [mcp_servers.mailbots]
 command = "npx"
 args = ["-y", "mailbots-mcp"]
-env = { MAILBOTS_MCP_PASSPHRASE = "a-long-random-passphrase" }
+env = { MAILBOTS_MCP_PASSPHRASE = "a-long-random-passphrase", MAILBOTS_MCP_HOST = "grok" }
 enabled = true
 startup_timeout_sec = 60
+tool_timeout_sec = 600
 ```
 
 Or from the CLI:
 
 ```bash
-grok mcp add mailbots -e MAILBOTS_MCP_PASSPHRASE=a-long-random-passphrase -- npx -y mailbots-mcp
+grok mcp add mailbots -e MAILBOTS_MCP_PASSPHRASE=a-long-random-passphrase -e MAILBOTS_MCP_HOST=grok -- npx -y mailbots-mcp
 grok mcp doctor mailbots
 ```
 
@@ -59,14 +60,17 @@ Grok Bot uses the same MCP policy and config as Cursor ([team MCP settings](http
       "command": "npx",
       "args": ["-y", "mailbots-mcp"],
       "env": {
-        "MAILBOTS_MCP_PASSPHRASE": "a-long-random-passphrase"
+        "MAILBOTS_MCP_PASSPHRASE": "a-long-random-passphrase",
+        "MAILBOTS_MCP_HOST": "grok"
       }
     }
   }
 }
 ```
 
-The Bot runs that process on **its** cloud computer. Gmail OAuth, IMAP/JMAP creds, and `~/.mailbots-mcp` live there, not on your laptop. Complete `authenticate` from a Grok Bot chat so the browser/OAuth flow can finish on that machine.
+The Bot runs that process on **its** cloud computer. Gmail OAuth, IMAP/JMAP creds, and `~/.mailbots-mcp` live there, not on your laptop.
+
+Gmail `authenticate` is two steps on Grok: the tool returns a URL. Open it in the Bot computer's browser (callback is `http://127.0.0.1:4895`). Then call `authenticate` again with the same alias. Do not open that URL on your laptop.
 
 #### Claude Code, Cursor, Windsurf
 

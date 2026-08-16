@@ -1,12 +1,15 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MailProvider, ProviderCapabilities } from "../providers/interface.js";
 import type { AccountManager } from "../accounts.js";
-import { env, envDisplay } from "../identity.js";
+import { env, envDisplay, resultBudgetBytes } from "../identity.js";
+import { clipToolText } from "../security/clip.js";
 
 export interface ToolContext {
   accountManager: AccountManager;
   getProvider: (alias: string) => MailProvider | Promise<MailProvider>;
   clearProviderCache?: (alias: string) => void;
+  /** Surface a mid-call note (OAuth URL) to stderr and MCP logging. */
+  notify?: (message: string) => void;
 }
 
 export interface ToolHandler {
@@ -75,37 +78,46 @@ export async function handleToolCall(
   ctx: ToolContext
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const tool = tools.find((t) => t.definition.name === name);
+  const clip = (result: { content: Array<{ type: "text"; text: string }>; isError?: boolean }) => {
+    const budget = resultBudgetBytes();
+    if (!budget) return result;
+    return {
+      ...result,
+      content: result.content.map((part) => ({ ...part, text: clipToolText(part.text, budget) })),
+    };
+  };
+
   if (!tool) {
-    return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+    return clip({ content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true });
   }
   if (!isToolEnabled(tool)) {
-    return {
+    return clip({
       content: [{
         type: "text",
         text: `Tool "${name}" is disabled: its group "${tool.group}" is not in ${envDisplay("TOOLS")} (currently "${env("TOOLS")}").`,
       }],
       isError: true,
-    };
+    });
   }
 
   if (tool.requiredCapability && args.account) {
     const provider = await ctx.getProvider(args.account as string);
     if (!provider.capabilities[tool.requiredCapability]) {
-      return {
+      return clip({
         content: [{
           type: "text",
           text: `${provider.type.toUpperCase()} accounts don't support ${tool.requiredCapability}.`,
         }],
         isError: true,
-      };
+      });
     }
   }
 
   try {
-    return await tool.handler(args, ctx);
+    return clip(await tool.handler(args, ctx));
   } catch (error) {
     const { redactTokens } = await import("../security/sanitize.js");
     const message = error instanceof Error ? error.message : String(error);
-    return { content: [{ type: "text", text: sanitizeErrorMessage(message, redactTokens) }], isError: true };
+    return clip({ content: [{ type: "text", text: sanitizeErrorMessage(message, redactTokens) }], isError: true });
   }
 }

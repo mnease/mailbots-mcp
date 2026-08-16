@@ -2,7 +2,7 @@ import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
-import { env } from "../identity.js";
+import { env, isGrokHost } from "../identity.js";
 
 registerTool({
   definition: {
@@ -25,7 +25,7 @@ registerTool({
 registerTool({
   definition: {
     name: "authenticate",
-    description: "Add a new email account. For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
+    description: "Add a new email account. For Gmail: starts OAuth (Grok Build/Grok Bot return a URL to open on the same machine, then call authenticate again). For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -65,8 +65,36 @@ registerTool({
 
     if (provider === "gmail") {
       try {
-        const { authenticateGmail } = await import("../auth/gmail-oauth.js");
-        await authenticateGmail(configDir, alias);
+        const {
+          authenticateGmail,
+          beginGmailOAuth,
+          awaitGmailOAuth,
+          hasPendingGmailOAuth,
+        } = await import("../auth/gmail-oauth.js");
+        const onAuthUrl = (url: string) => {
+          ctx.notify?.(`Gmail OAuth URL (open on this machine, not a different laptop): ${url}`);
+        };
+        if (hasPendingGmailOAuth(alias)) {
+          await awaitGmailOAuth(alias);
+        } else if (isGrokHost()) {
+          const { authUrl } = beginGmailOAuth(configDir, alias, { onAuthUrl });
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Gmail OAuth started for "${alias}" (${email}).`,
+                "Open this URL in a browser on the SAME machine that runs mailbots-mcp.",
+                "Grok Bot: that is the Bot computer, not your laptop. The callback is http://127.0.0.1:4895.",
+                "",
+                authUrl,
+                "",
+                `After Google redirects, call authenticate again with alias="${alias}" provider="gmail" email="${email}".`,
+              ].join("\n"),
+            }],
+          };
+        } else {
+          await authenticateGmail(configDir, alias, { onAuthUrl });
+        }
         ctx.accountManager.addAccount(alias, { provider: "gmail", email });
       } catch (e) {
         rollbackDir();
@@ -150,7 +178,7 @@ registerTool({
 registerTool({
   definition: {
     name: "reauth",
-    description: "Re-run OAuth for an existing Gmail account without removing it. Opens a browser for Google sign-in. Use when the refresh token expires (invalid_grant) or scopes change.",
+    description: "Re-run OAuth for an existing Gmail account without removing it. Grok Build/Grok Bot return a URL to open on this machine, then call reauth again. Use when the refresh token expires (invalid_grant) or scopes change.",
     inputSchema: {
       type: "object" as const,
       properties: { alias: { type: "string", description: "Account alias to re-authenticate" } },
@@ -167,8 +195,36 @@ registerTool({
         isError: true,
       };
     }
-    const { authenticateGmail } = await import("../auth/gmail-oauth.js");
-    await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
+    const {
+      authenticateGmail,
+      beginGmailOAuth,
+      awaitGmailOAuth,
+      hasPendingGmailOAuth,
+    } = await import("../auth/gmail-oauth.js");
+    const onAuthUrl = (url: string) => {
+      ctx.notify?.(`Gmail OAuth URL (open on this machine, not a different laptop): ${url}`);
+    };
+    const configDir = ctx.accountManager.getConfigDir();
+    if (hasPendingGmailOAuth(alias)) {
+      await awaitGmailOAuth(alias);
+    } else if (isGrokHost()) {
+      const { authUrl } = beginGmailOAuth(configDir, alias, { onAuthUrl });
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Gmail reauth started for "${alias}" (${account.email}).`,
+            "Open this URL on the SAME machine that runs mailbots-mcp (Grok Bot: the Bot computer).",
+            "",
+            authUrl,
+            "",
+            `After Google redirects, call reauth again with alias="${alias}".`,
+          ].join("\n"),
+        }],
+      };
+    } else {
+      await authenticateGmail(configDir, alias, { onAuthUrl });
+    }
     ctx.clearProviderCache?.(alias);
     return { content: [{ type: "text", text: `Gmail account "${alias}" (${account.email}) re-authenticated successfully.` }] };
   },

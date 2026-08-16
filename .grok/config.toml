@@ -1,0 +1,9 @@
+# Project MCP for Grok Build. Secrets stay in the environment.
+[mcp_servers.mailbots]
+command = "npx"
+args = ["-y", "mailbots-mcp"]
+env = { MAILBOTS_MCP_PASSPHRASE = "${MAILBOTS_MCP_PASSPHRASE}", MAILBOTS_MCP_HOST = "grok" }
+enabled = true
+startup_timeout_sec = 60
+tool_timeout_sec = 600
+tool_timeouts = { authenticate = 360, reauth = 360, search_emails = 120, read_email = 90, multi_account_search = 180 }

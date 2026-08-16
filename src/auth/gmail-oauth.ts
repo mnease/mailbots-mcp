@@ -18,18 +18,33 @@ const REDIRECT_PORT = 4895;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth2callback`;
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
-function openInBrowser(url: string): void {
-  const opener =
-    platform() === "darwin" ? { cmd: "open", args: [url] }
-    : platform() === "win32" ? { cmd: "cmd", args: ["/c", "start", "", url] }
-    : { cmd: "xdg-open", args: [url] };
-  try {
-    const child = spawn(opener.cmd, opener.args, { detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // Fall through — URL is still logged to stderr below.
+function openerCandidates(): Array<{ cmd: string; args: string[] }> {
+  const os = platform();
+  if (os === "darwin") return [{ cmd: "open", args: [] }];
+  if (os === "win32") return [{ cmd: "cmd", args: ["/c", "start", ""] }];
+  return [
+    { cmd: "xdg-open", args: [] },
+    { cmd: "gio", args: ["open"] },
+    { cmd: "gnome-open", args: [] },
+  ];
+}
+
+/** Best-effort local browser open. Grok Bot's cloud computer may have no opener. */
+export function openInBrowser(url: string): boolean {
+  for (const opener of openerCandidates()) {
+    const bin = opener.cmd === "cmd" ? "cmd" : opener.cmd;
+    const resolved = opener.cmd === "cmd" || existsSync(opener.cmd) || existsSync(`/usr/bin/${opener.cmd}`) || existsSync(`/bin/${opener.cmd}`);
+    if (!resolved && opener.cmd !== "open" && opener.cmd !== "cmd") continue;
+    try {
+      const child = spawn(bin, [...opener.args, url], { detached: true, stdio: "ignore" });
+      child.on("error", () => {});
+      child.unref();
+      return true;
+    } catch {
+      continue;
+    }
   }
+  return false;
 }
 
 interface OAuthKeys {
@@ -52,15 +67,32 @@ function loadOAuthKeys(configDir: string): { clientId: string; clientSecret: str
   return { clientId: creds.client_id, clientSecret: creds.client_secret };
 }
 
-export async function authenticateGmail(
+export interface PendingGmailOAuth {
+  authUrl: string;
+  done: Promise<void>;
+}
+
+const pendingByAlias = new Map<string, PendingGmailOAuth>();
+
+export function hasPendingGmailOAuth(alias: string): boolean {
+  return pendingByAlias.has(alias);
+}
+
+/** Start localhost OAuth. Safe to call twice for the same alias (returns the in-flight session). */
+export function beginGmailOAuth(
   configDir: string,
-  alias: string
-): Promise<void> {
+  alias: string,
+  opts?: { onAuthUrl?: (url: string) => void },
+): PendingGmailOAuth {
+  const existing = pendingByAlias.get(alias);
+  if (existing) {
+    opts?.onAuthUrl?.(existing.authUrl);
+    return existing;
+  }
+
   const { clientId, clientSecret } = loadOAuthKeys(configDir);
   const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
-
   const state = randomBytes(32).toString("hex");
-
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
     scope: SCOPES,
@@ -75,7 +107,7 @@ export async function authenticateGmail(
     "Cache-Control": "no-store",
   };
 
-  const code = await new Promise<string>((resolve, reject) => {
+  const done = new Promise<void>((resolve, reject) => {
     let settled = false;
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -96,7 +128,7 @@ export async function authenticateGmail(
       const returnedState = url.searchParams.get("state");
       if (returnedState !== state) {
         res.writeHead(403, securityHeaders);
-        res.end("<h1>Authentication failed</h1><p>State mismatch — possible CSRF attack. You can close this tab.</p>");
+        res.end("<h1>Authentication failed</h1><p>State mismatch. Possible CSRF. You can close this tab.</p>");
         finish(() => reject(new Error("OAuth state mismatch: possible CSRF attack")));
         return;
       }
@@ -120,26 +152,54 @@ export async function authenticateGmail(
 
       res.writeHead(200, securityHeaders);
       res.end("<h1>Authentication successful</h1><p>You can close this tab.</p>");
-      finish(() => resolve(authCode));
+      finish(() => {
+        oauth2Client.getToken(authCode).then(({ tokens }) => {
+          const accountDir = join(configDir, "accounts", alias);
+          ensureDir(accountDir);
+          secureWriteFile(join(accountDir, "token.json"), JSON.stringify(tokens, null, 2));
+          resolve();
+        }).catch(reject);
+      });
     });
 
     const timeout = setTimeout(() => {
-      finish(() => reject(new Error(`OAuth callback not received within ${OAUTH_TIMEOUT_MS / 1000}s — aborting.`)));
+      finish(() => reject(new Error(
+        `OAuth callback not received within ${OAUTH_TIMEOUT_MS / 1000}s. Open this URL on the same machine that runs mailbots-mcp:\n${authUrl}`,
+      )));
     }, OAUTH_TIMEOUT_MS);
 
     server.listen(REDIRECT_PORT, "127.0.0.1", () => {
-      console.error(`\nOpening browser to authenticate. If it doesn't open, visit:\n\n${authUrl}\n`);
+      console.error(`\nGmail OAuth. Open this URL on THIS machine (Grok Bot: the Bot computer, not your laptop):\n\n${authUrl}\n`);
       openInBrowser(authUrl);
     });
 
     server.on("error", (err) => finish(() => reject(err)));
   });
 
-  const { tokens } = await oauth2Client.getToken(code);
+  const session: PendingGmailOAuth = { authUrl, done };
+  pendingByAlias.set(alias, session);
+  void done.finally(() => {
+    if (pendingByAlias.get(alias) === session) pendingByAlias.delete(alias);
+  });
+  opts?.onAuthUrl?.(authUrl);
+  return session;
+}
 
-  const accountDir = join(configDir, "accounts", alias);
-  ensureDir(accountDir);
-  secureWriteFile(join(accountDir, "token.json"), JSON.stringify(tokens, null, 2));
+export async function awaitGmailOAuth(alias: string): Promise<void> {
+  const session = pendingByAlias.get(alias);
+  if (!session) {
+    throw new Error(`No in-flight Gmail OAuth for "${alias}". Call authenticate again to start a new flow.`);
+  }
+  await session.done;
+}
+
+export async function authenticateGmail(
+  configDir: string,
+  alias: string,
+  opts?: { onAuthUrl?: (url: string) => void },
+): Promise<void> {
+  const { done } = beginGmailOAuth(configDir, alias, opts);
+  await done;
 }
 
 export async function getGmailClient(configDir: string, alias: string) {

@@ -21,12 +21,10 @@ const LOG_DIR = defaultConfigDir();
 const LOG_PATH = join(LOG_DIR, "debug.log");
 const LOG_MAX_BYTES = 1024 * 1024;
 
-// Capture our parent PID at startup. If the Claude Code harness dies abruptly
-// without sending SIGTERM/SIGHUP or closing stdin (e.g. SIGKILL'd by the OS, or
-// the harness itself is reaped) we'll be reparented to PID 1 (launchd on macOS).
-// The heartbeat watchdog below catches that and exits cleanly so we don't
-// accumulate as zombies. Catches the gap left by the signal handlers, which
-// can't intercept SIGKILL.
+// Capture our parent PID at startup. If the harness dies abruptly without
+// closing stdin we may be reparented to PID 1. Grok Build / Grok Bot often
+// reparent a healthy npx child while the stdio pipe is still live; only treat
+// reparent as death when stdin is already gone.
 const INITIAL_PPID = process.ppid;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
@@ -66,7 +64,15 @@ function readPackageVersion(): string {
 
 const server = new Server(
   { name: PACKAGE_NAME, version: readPackageVersion() },
-  { capabilities: { tools: {} } }
+  {
+    capabilities: { tools: {}, logging: {} },
+    instructions: [
+      "Mailbots-MCP: search, read, send, and manage email (Gmail, IMAP, JMAP).",
+      "Call list_accounts first. Prefer search_emails with a small max_results, then read_email.",
+      "On Grok Build or Grok Bot, Gmail authenticate returns a URL. Open it on the same machine that runs this server (Grok Bot: the Bot computer, not the user's laptop), then call authenticate again with the same alias.",
+      "Keep result payloads small; large bodies are clipped.",
+    ].join(" "),
+  },
 );
 
 const accountManager = new AccountManager();
@@ -89,6 +95,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       accountManager,
       getProvider,
       clearProviderCache: (alias: string) => { providers.clear(alias); },
+      notify: (message: string) => {
+        console.error(message);
+        void server.sendLoggingMessage({ level: "info", logger: PACKAGE_NAME, data: message }).catch(() => {});
+      },
     });
     const ms = Date.now() - startedAt;
     const responseBytes = JSON.stringify(result).length;
@@ -135,12 +145,11 @@ process.on("uncaughtException", (err) => {
 // server inside its controlling-terminal process group. SIGHUP (terminal
 // hangup) and SIGINT (Ctrl-C) are therefore collateral from the user
 // interacting with the terminal -- detaching zellij, closing the window,
-// interrupting Claude -- NOT the harness asking us to stop. Exiting on them is
+// interrupting the TUI -- NOT the harness asking us to stop. Exiting on them is
 // what made the server "keep disconnecting" mid-session. Ignore them and keep
 // serving: the harness stops us authoritatively by closing stdin (EOF, handled
-// below) or sending SIGTERM, and the reparent watchdog catches an abrupt
-// parent death. SIGPIPE is already ignored by Node and surfaces as EPIPE on
-// write, handled by the stream-error path.
+// below) or sending SIGTERM. SIGPIPE is already ignored by Node and surfaces as
+// EPIPE on write, handled by the stream-error path.
 for (const sig of ["SIGHUP", "SIGINT"] as const) {
   process.on(sig, () => { logEvent("signal-ignored", sig); });
 }
@@ -151,12 +160,10 @@ process.on("SIGTERM", () => {
 });
 process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 
-// When Claude Code closes the stdio pipe (parent restart, session compaction,
+// When the harness closes the stdio pipe (parent restart, session compaction,
 // subagent spawn invalidating the registration, etc.) we exit cleanly instead
-// of staying alive as a zombie. Otherwise: orphan processes accumulate, the
-// next /mcp reconnect spawns yet another, and the user has to hunt them down
-// with pkill. A clean exit is the right behaviour — Claude Code re-spawns us
-// on demand when a tool is called next.
+// of staying alive as a zombie. Otherwise orphan processes accumulate and the
+// next reconnect spawns another. The client re-spawns us on the next tool call.
 let shuttingDown = false;
 function shutdownClean(reason: string): void {
   if (shuttingDown) return;
@@ -218,9 +225,13 @@ async function main() {
   setInterval(() => {
     const currentPpid = process.ppid;
     if (currentPpid !== INITIAL_PPID) {
-      logEvent("reparented", `from=${INITIAL_PPID} to=${currentPpid}`);
-      shutdownClean(`parent-died (ppid ${INITIAL_PPID} -> ${currentPpid})`);
-      return;
+      const stdinGone = process.stdin.destroyed || process.stdin.readableEnded || !process.stdin.readable;
+      if (stdinGone) {
+        logEvent("reparented", `from=${INITIAL_PPID} to=${currentPpid}`);
+        shutdownClean(`parent-died (ppid ${INITIAL_PPID} -> ${currentPpid})`);
+        return;
+      }
+      logEvent("reparented-kept", `from=${INITIAL_PPID} to=${currentPpid} stdin=open`);
     }
     logEvent("alive", `ppid=${currentPpid}`);
   }, HEARTBEAT_INTERVAL_MS).unref();

@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 0.11.2 — 2026-08-16
+
 ### Changed
+- Optimized for Grok Build and Grok Bot: `MAILBOTS_MCP_HOST=grok` enables URL-first Gmail OAuth (open on the Bot computer, then authenticate again), MCP `instructions`, result clipping under Grok's 20KB cap, and a reparent watchdog that does not kill a live stdio pipe (npx / Grok Bot VM).
 - README install covers Grok Build (`~/.grok/config.toml` / `grok mcp add`) and Grok Bot (Cursor / Plugins MCP).
 
 ## 0.11.1 — 2026-08-16
