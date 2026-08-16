@@ -1,6 +1,6 @@
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { registerTool } from "./registry.js";
+import { registerTool, type ToolContext } from "./registry.js";
 import { clearSendLimit } from "./write.js";
 import { env, isGrokHost } from "../identity.js";
 
@@ -25,7 +25,7 @@ registerTool({
 registerTool({
   definition: {
     name: "authenticate",
-    description: "Add a new email account. For Gmail: starts OAuth (Grok Build/Grok Bot return a URL to open on the same machine, then call authenticate again). For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
+    description: "Add an email account. Gmail with a password uses Gmail IMAP (any Google account; use a Google app password). Gmail without a password uses Gmail API OAuth (needs oauth-keys.json and a published/test-user OAuth app). IMAP/JMAP store encrypted credentials. Username/password can come from the environment.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -36,8 +36,8 @@ registerTool({
         port: { type: "number", description: "IMAP server port (IMAP only, default 993)" },
         smtpHost: { type: "string", description: "SMTP server hostname (IMAP only)" },
         smtpPort: { type: "number", description: "SMTP server port (IMAP only, default 587)" },
-        username: { type: "string", description: "IMAP/SMTP username (IMAP only)" },
-        password: { type: "string", description: "IMAP/SMTP password or app password (IMAP only)" },
+        username: { type: "string", description: "IMAP/SMTP username (default: email for Gmail IMAP)" },
+        password: { type: "string", description: "IMAP/SMTP password or Google app password. If set with provider=gmail, uses Gmail IMAP instead of OAuth." },
         sessionUrl: { type: "string", description: "JMAP session URL override (JMAP only, auto-discovered from host by default)" },
       },
       required: ["alias", "provider", "email"],
@@ -64,6 +64,16 @@ registerTool({
     };
 
     if (provider === "gmail") {
+      const appPassword = (args.password as string) || env("GMAIL_APP_PASSWORD") || env("IMAP_PASSWORD");
+      if (appPassword) {
+        const username = (args.username as string) || env("IMAP_USERNAME") || email;
+        return addImapAccount(ctx, {
+          alias, email, username, password: appPassword,
+          host: "imap.gmail.com", port: 993,
+          smtpHost: "smtp.gmail.com", smtpPort: 587,
+          rollbackDir,
+        });
+      }
       try {
         const {
           authenticateGmail,
@@ -110,24 +120,12 @@ registerTool({
       const smtpPort = (args.smtpPort as number) ?? 587;
       const username = (args.username as string) || env("IMAP_USERNAME");
       const password = (args.password as string) || env("IMAP_PASSWORD");
-      const passphrase = env("PASSPHRASE") ?? "";
-
       if (!host || !smtpHost || !username || !password) {
         return { content: [{ type: "text", text: "IMAP accounts require: host, smtpHost, username, and password" }], isError: true };
       }
-      if (!passphrase) {
-        return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOTS_MCP_PASSPHRASE in the server environment." }], isError: true };
-      }
-
-      try {
-        const { encryptCredentialsFile } = await import("../auth/credentials.js");
-        encryptCredentialsFile(configDir, alias, { username, password }, passphrase, "IMAP");
-        ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
-      } catch (e) {
-        rollbackDir();
-        throw e;
-      }
-      return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
+      return addImapAccount(ctx, {
+        alias, email, username, password, host, port, smtpHost, smtpPort, rollbackDir,
+      });
     }
 
     if (provider === "jmap") {
@@ -249,3 +247,59 @@ registerTool({
     return { content: [{ type: "text", text: `Account "${alias}" removed.` }] };
   },
 });
+
+async function addImapAccount(
+  ctx: ToolContext,
+  opts: {
+    alias: string;
+    email: string;
+    username: string;
+    password: string;
+    host: string;
+    port: number;
+    smtpHost: string;
+    smtpPort: number;
+    rollbackDir: () => void;
+  },
+) {
+  const passphrase = env("PASSPHRASE") ?? "";
+  if (!passphrase) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: "IMAP / Gmail app-password accounts require MAILBOTS_MCP_PASSPHRASE in the server environment so credentials can be encrypted at rest.",
+      }],
+      isError: true,
+    };
+  }
+  try {
+    const { encryptCredentialsFile } = await import("../auth/credentials.js");
+    encryptCredentialsFile(
+      ctx.accountManager.getConfigDir(),
+      opts.alias,
+      { username: opts.username, password: opts.password },
+      passphrase,
+      "IMAP",
+    );
+    ctx.accountManager.addAccount(opts.alias, {
+      provider: "imap",
+      email: opts.email,
+      host: opts.host,
+      port: opts.port,
+      smtpHost: opts.smtpHost,
+      smtpPort: opts.smtpPort,
+    });
+  } catch (e) {
+    opts.rollbackDir();
+    throw e;
+  }
+  const viaGmail = opts.host === "imap.gmail.com";
+  return {
+    content: [{
+      type: "text" as const,
+      text: viaGmail
+        ? `Gmail IMAP account "${opts.alias}" (${opts.email}) configured. Uses an app password over IMAP/SMTP (any Google account). Gmail-only tools (filters, vacation, send-as) are not available on this path.`
+        : `IMAP account "${opts.alias}" (${opts.email}) configured. Credentials encrypted.`,
+    }],
+  };
+}

@@ -104,7 +104,29 @@ npm install && npm run build
 Then point the config at the build with `"command": "node", "args": ["/path/to/mailbots-mcp/dist/server.js"]`.
 </details>
 
-### Add a Gmail Account
+### Any Gmail account (like a normal mail client)
+
+Apple Mail, Thunderbird, and Outlook can sign into **any** Gmail inbox because **they** already have a Google-verified OAuth app. Mailbots cannot do that with a personal Cloud Console client:
+
+- Gmail API scopes (`gmail.modify`, `gmail.compose`, settings) are **restricted**.
+- An app in **Testing** only allows listed test users (and hits `redirect_uri_mismatch` if the desktop client does not allow our loopback URI).
+- **Any Google account** via the Gmail API requires a **published** OAuth consent screen plus Google's restricted-scope verification (privacy policy, brand check, CASA). That is a product process, not a config toggle.
+
+**What works today for any Gmail / Workspace address** (same idea as Thunderbird + an app password):
+
+1. In the Google account: [App passwords](https://myaccount.google.com/apppasswords) (2-Step Verification must be on).
+2. Set `MAILBOTS_MCP_PASSPHRASE` in the MCP server env.
+3. Authenticate with `provider="gmail"` **and** that app password. Mailbots uses `imap.gmail.com` / `smtp.gmail.com`. No Cloud Console project, no test-user list.
+
+```
+authenticate alias="business" provider="gmail" email="you@company.com" password="<google-app-password>"
+```
+
+This path is IMAP. Search, read, send, drafts, labels, and trash work. Gmail-only tools (filters, vacation, send-as, templates) need the Gmail API OAuth path below.
+
+**Gmail API OAuth** (filters and the rest) is for accounts you add as test users, or for everyone after the Mailbots OAuth app is verified. Use a **Desktop** client JSON at `~/.mailbots-mcp/oauth-keys.json` (or `~/.mailbox-mcp` if that directory already exists). Mailbots now sends `http://localhost:4895` with no path, which is what desktop clients allow.
+
+### Add a Gmail Account (API / OAuth)
 
 #### 1. Create a Google Cloud project
 

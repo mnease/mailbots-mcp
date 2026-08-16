@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.11.3 — 2026-08-16
+
+### Changed
+- Gmail desktop OAuth uses `http://localhost:4895` (no `/oauth2callback`) so installed clients no longer fail with `redirect_uri_mismatch`.
+- `authenticate provider=gmail` with a password uses Gmail IMAP/SMTP (any Google account, app password). OAuth stays the no-password path.
+
 ## 0.11.2 — 2026-08-16
 
 ### Changed

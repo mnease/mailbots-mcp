@@ -7,6 +7,7 @@ import { OAuth2Client } from "google-auth-library";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { secureWriteFile, ensureDir } from "../security/permissions.js";
+import { env } from "../identity.js";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",      // Read, send, trash, labels, filters
@@ -14,9 +15,40 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.settings.basic", // Signatures, vacation, send-as, filters
 ];
 
-const REDIRECT_PORT = 4895;
-const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth2callback`;
+const DEFAULT_REDIRECT_PORT = 4895;
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Desktop OAuth clients register `http://localhost` (no path). Google then
+ * accepts `http://localhost:<port>` / `http://127.0.0.1:<port>`. A custom
+ * path such as /oauth2callback is a 400 redirect_uri_mismatch.
+ */
+export function resolveGmailRedirect(redirectUris?: string[]): { uri: string; port: number; host: string } {
+  const override = env("OAUTH_REDIRECT");
+  if (override) {
+    const u = new URL(override);
+    const port = Number(u.port || (u.protocol === "https:" ? 443 : 80));
+    return { uri: override.replace(/\/$/, ""), port, host: u.hostname };
+  }
+  const port = DEFAULT_REDIRECT_PORT;
+  const uris = redirectUris ?? [];
+  const withPort = uris.find((u) => /localhost:\d+|127\.0\.0\.1:\d+/.test(u));
+  if (withPort) {
+    const u = new URL(withPort);
+    return { uri: withPort.replace(/\/$/, ""), port: Number(u.port || port), host: u.hostname };
+  }
+  if (uris.some((u) => /^https?:\/\/localhost\/?$/.test(u))) {
+    return { uri: `http://localhost:${port}`, port, host: "localhost" };
+  }
+  if (uris.some((u) => /^https?:\/\/127\.0\.0\.1\/?$/.test(u))) {
+    return { uri: `http://127.0.0.1:${port}`, port, host: "127.0.0.1" };
+  }
+  return { uri: `http://127.0.0.1:${port}`, port, host: "127.0.0.1" };
+}
+
+function isOAuthCallbackPath(pathname: string): boolean {
+  return pathname === "/" || pathname === "" || pathname === "/oauth2callback";
+}
 
 function openerCandidates(): Array<{ cmd: string; args: string[] }> {
   const os = platform();
@@ -47,12 +79,18 @@ export function openInBrowser(url: string): boolean {
   return false;
 }
 
-interface OAuthKeys {
-  installed?: { client_id: string; client_secret: string };
-  web?: { client_id: string; client_secret: string };
+interface OAuthClientBlock {
+  client_id: string;
+  client_secret: string;
+  redirect_uris?: string[];
 }
 
-function loadOAuthKeys(configDir: string): { clientId: string; clientSecret: string } {
+interface OAuthKeys {
+  installed?: OAuthClientBlock;
+  web?: OAuthClientBlock;
+}
+
+function loadOAuthKeys(configDir: string): { clientId: string; clientSecret: string; redirectUris?: string[] } {
   const keysPath = join(configDir, "oauth-keys.json");
   if (!existsSync(keysPath)) {
     throw new Error(
@@ -64,7 +102,7 @@ function loadOAuthKeys(configDir: string): { clientId: string; clientSecret: str
   if (!creds) {
     throw new Error("Invalid oauth-keys.json: expected 'installed' or 'web' credentials");
   }
-  return { clientId: creds.client_id, clientSecret: creds.client_secret };
+  return { clientId: creds.client_id, clientSecret: creds.client_secret, redirectUris: creds.redirect_uris };
 }
 
 export interface PendingGmailOAuth {
@@ -90,8 +128,9 @@ export function beginGmailOAuth(
     return existing;
   }
 
-  const { clientId, clientSecret } = loadOAuthKeys(configDir);
-  const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
+  const { clientId, clientSecret, redirectUris } = loadOAuthKeys(configDir);
+  const redirect = resolveGmailRedirect(redirectUris);
+  const oauth2Client = new OAuth2Client(clientId, clientSecret, redirect.uri);
   const state = randomBytes(32).toString("hex");
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
@@ -118,8 +157,8 @@ export function beginGmailOAuth(
     };
 
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", `http://localhost:${REDIRECT_PORT}`);
-      if (url.pathname !== "/oauth2callback") {
+      const url = new URL(req.url ?? "/", `http://${redirect.host}:${redirect.port}`);
+      if (!isOAuthCallbackPath(url.pathname)) {
         res.writeHead(404);
         res.end();
         return;
@@ -168,7 +207,7 @@ export function beginGmailOAuth(
       )));
     }, OAUTH_TIMEOUT_MS);
 
-    server.listen(REDIRECT_PORT, "127.0.0.1", () => {
+    server.listen(redirect.port, "127.0.0.1", () => {
       console.error(`\nGmail OAuth. Open this URL on THIS machine (Grok Bot: the Bot computer, not your laptop):\n\n${authUrl}\n`);
       openInBrowser(authUrl);
     });
@@ -203,7 +242,7 @@ export async function authenticateGmail(
 }
 
 export async function getGmailClient(configDir: string, alias: string) {
-  const { clientId, clientSecret } = loadOAuthKeys(configDir);
+  const { clientId, clientSecret, redirectUris } = loadOAuthKeys(configDir);
   const tokenPath = join(configDir, "accounts", alias, "token.json");
 
   if (!existsSync(tokenPath)) {
@@ -211,7 +250,8 @@ export async function getGmailClient(configDir: string, alias: string) {
   }
 
   const tokens = JSON.parse(readFileSync(tokenPath, "utf-8"));
-  const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
+  const redirect = resolveGmailRedirect(redirectUris);
+  const oauth2Client = new OAuth2Client(clientId, clientSecret, redirect.uri);
   oauth2Client.setCredentials(tokens);
 
   oauth2Client.on("tokens", (newTokens) => {
