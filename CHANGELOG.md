@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- README install covers Grok Build (`~/.grok/config.toml` / `grok mcp add`) and Grok Bot (Cursor / Plugins MCP).
+
 ## 0.11.1 — 2026-08-16
 
 ### Changed

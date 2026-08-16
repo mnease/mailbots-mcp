@@ -10,7 +10,7 @@
 
 </div>
 
-Mailbots-MCP is an [MCP server](https://modelcontextprotocol.io) that connects your email to Claude Code, Cursor, Windsurf, or any AI tool that supports the Model Context Protocol. Instead of switching between your terminal and Gmail, you ask the AI to find that invoice, summarize a thread, or draft a reply — and it does.
+Mailbots-MCP is an [MCP server](https://modelcontextprotocol.io) that connects your email to [Grok Build](https://docs.x.ai/build/overview), [Grok Bot](https://x.ai/news/introducing-grok-bot), Claude Code, Cursor, Windsurf, or any AI tool that supports the Model Context Protocol. Instead of switching between your terminal and Gmail, you ask the AI to find that invoice, summarize a thread, or draft a reply, and it does.
 
 **What makes this different from the 60+ other email MCP servers:**
 
@@ -24,7 +24,53 @@ Mailbots-MCP is an [MCP server](https://modelcontextprotocol.io) that connects y
 
 ### Install
 
-Add to your Claude Code MCP config (`~/.claude.json`). The package runs straight from npm via `npx`:
+The package runs from npm via `npx`. Pick the client you use.
+
+#### Grok Build
+
+Add a stdio server in `~/.grok/config.toml` (or `.grok/config.toml` in a repo), then restart or `/mcps`:
+
+```toml
+[mcp_servers.mailbots]
+command = "npx"
+args = ["-y", "mailbots-mcp"]
+env = { MAILBOTS_MCP_PASSPHRASE = "a-long-random-passphrase" }
+enabled = true
+startup_timeout_sec = 60
+```
+
+Or from the CLI:
+
+```bash
+grok mcp add mailbots -e MAILBOTS_MCP_PASSPHRASE=a-long-random-passphrase -- npx -y mailbots-mcp
+grok mcp doctor mailbots
+```
+
+Grok Build also reads Claude Code MCP entries (`~/.claude.json` and project `.mcp.json`), so the JSON block below works there too.
+
+#### Grok Bot
+
+Grok Bot uses the same MCP policy and config as Cursor ([team MCP settings](https://docs.x.ai/grok-bot/teams-and-enterprises) apply if you are on a team). Add Mailbots as a command server in **Grok Bot → Plugins** or **Cursor Settings → MCP**:
+
+```json
+{
+  "mcpServers": {
+    "mailbots": {
+      "command": "npx",
+      "args": ["-y", "mailbots-mcp"],
+      "env": {
+        "MAILBOTS_MCP_PASSPHRASE": "a-long-random-passphrase"
+      }
+    }
+  }
+}
+```
+
+The Bot runs that process on **its** cloud computer. Gmail OAuth, IMAP/JMAP creds, and `~/.mailbots-mcp` live there, not on your laptop. Complete `authenticate` from a Grok Bot chat so the browser/OAuth flow can finish on that machine.
+
+#### Claude Code, Cursor, Windsurf
+
+Add to Claude Code (`~/.claude.json`), Cursor MCP settings, or Windsurf:
 
 ```json
 {
@@ -74,17 +120,17 @@ Then point the config at the build with `"command": "node", "args": ["/path/to/m
 2. **Application type**: Desktop app
 3. Click **Create**
 4. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials), find your client, and click the download icon to get the JSON
-5. Save the file as `~/.mailbots-mcp/oauth-keys.json`
+5. Save the file as `~/.mailbots-mcp/oauth-keys.json` (on the machine that runs the MCP server: your laptop for Grok Build, the Bot computer for Grok Bot)
 
 #### 4. Authenticate
 
-In Claude Code, run: `authenticate alias="personal" provider="gmail" email="you@gmail.com"`
+In Grok Build, Grok Bot, or Claude Code, run: `authenticate alias="personal" provider="gmail" email="you@gmail.com"`
 
 This opens a browser window to complete the OAuth flow. Your tokens are stored locally in `~/.mailbots-mcp/accounts/`. If you already have `~/.mailbox-mcp`, that directory is still used.
 
 ### Add an IMAP Account
 
-In Claude Code, run:
+In Grok Build, Grok Bot, or Claude Code, run:
 
 ```
 authenticate alias="work" provider="imap" email="you@company.com" host="imap.company.com" smtpHost="smtp.company.com" username="you@company.com" password="<app-password>"
@@ -94,7 +140,7 @@ Credentials are encrypted at rest using AES-256-GCM.
 
 ### Add a JMAP Account
 
-In Claude Code, run:
+In Grok Build, Grok Bot, or Claude Code, run:
 
 ```
 authenticate alias="fastmail" provider="jmap" email="you@fastmail.com" host="fastmail.com" username="you@fastmail.com" password="<app-password>"
