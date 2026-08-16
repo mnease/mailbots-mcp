@@ -37,6 +37,9 @@
     "type": "git",
     "url": "git+https://github.com/mnease/mailbots-mcp.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },
