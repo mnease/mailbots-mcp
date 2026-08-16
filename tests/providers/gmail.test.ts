@@ -279,7 +279,9 @@ describe("GmailProvider", () => {
   it("listTemplates searches drafts with the mailbox-mcp-template label, not all mail", async () => {
     mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [] } });
     await provider.listTemplates();
-    expect(mockGmail.users.messages.list.mock.calls[0][0].q).toBe("in:drafts label:mailbox-mcp-template");
+    const q = mockGmail.users.messages.list.mock.calls[0][0].q as string;
+    expect(q).toBe("in:drafts label:mailbox-mcp-template");
+    expect(q).not.toContain("subject:[TEMPLATE");
   });
 
   it("replyToMessage sets In-Reply-To and References from the original Message-ID", async () => {
