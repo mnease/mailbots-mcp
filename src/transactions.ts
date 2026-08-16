@@ -25,6 +25,7 @@ export interface TransactionRecord {
   add_labels: string[];
   remove_labels: string[];
   message_ids: string[];
+  restore?: Array<{ id: string; folder?: string; mailboxIds?: string[] }>;
   reversed_at?: string;
   reversed_by?: string;
 }

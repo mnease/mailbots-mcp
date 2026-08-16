@@ -16,6 +16,10 @@ export interface EmailMessage extends EmailSummary {
   bcc: string[];
   replyTo?: string;
   attachments: AttachmentInfo[];
+  /** RFC 5322 Message-ID of this message, used to thread replies. */
+  rfcMessageId?: string;
+  /** Existing References header, if any. */
+  references?: string;
 }
 
 export interface EmailThread {
@@ -77,6 +81,8 @@ export interface SendOptions {
   html?: boolean;
   replyTo?: string;
   attachments?: Attachment[];
+  inReplyTo?: string;
+  references?: string;
 }
 
 export interface ReplyOptions {
@@ -113,6 +119,24 @@ export interface ProviderCapabilities {
   unsubscribe: boolean;
   attachments: boolean;
   inboxSummary: boolean;
+  draftsEdit: boolean;
+  sendAs: boolean;
+}
+
+/** Inverse of a recorded bulk_modify or bulk_trash, replayed by the provider. */
+export interface BulkUndoRequest {
+  kind: "modify" | "trash";
+  messageIds: string[];
+  addLabels: string[];
+  removeLabels: string[];
+  restore?: Array<{ id: string; folder?: string; mailboxIds?: string[] }>;
+}
+
+/** Result of trashing so undo can restore to the original folder/mailbox. */
+export interface TrashResult {
+  id: string;
+  restoreFolder?: string;
+  restoreMailboxIds?: string[];
 }
 
 export interface MailProvider {
@@ -127,7 +151,8 @@ export interface MailProvider {
   replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string>;
   forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string>;
   createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string>;
-  trashMessages(messageIds: string[]): Promise<void>;
+  trashMessages(messageIds: string[]): Promise<TrashResult[]>;
+  undoBulk(request: BulkUndoRequest): Promise<void>;
 
   listLabels(): Promise<Label[]>;
   createLabel(name: string): Promise<Label>;

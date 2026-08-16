@@ -1,37 +1,8 @@
-import { Readable } from "node:stream";
 import { registerTool } from "./registry.js";
-import { fenceEmailHeader, fenceEmailContent, stripFencing } from "../security/sanitize.js";
-import { checkSendLimit } from "./write.js";
-import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions, type GmailProvider } from "../providers/gmail.js";
+import { fenceEmailHeader, fenceEmailContent } from "../security/sanitize.js";
+import { checkSendLimit, recordSuccessfulSend } from "./write.js";
+import { asGmailAccount } from "../providers/gmail.js";
 import { loadAttachments } from "../security/attachment-loader.js";
-
-function getGmailApi(provider: any) {
-  if (provider.type !== "gmail" || !provider.gmailApi) {
-    throw new Error("This tool requires a Gmail account");
-  }
-  return provider.gmailApi;
-}
-
-// --- Filters ---
-registerTool(
-  { name: "list_filters", description: "List Gmail filters",
-    inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const gmail = getGmailApi(provider);
-    const res = await gmail.users.settings.filters.list({ userId: "me" });
-    const filters = res.data.filter ?? [];
-    if (filters.length === 0) return { content: [{ type: "text", text: "No filters configured." }] };
-    const names = await (provider as GmailProvider).labelNamesById();
-    const describe = (part: unknown, withNames = false) => {
-      if (!part) return "{}";
-      const value = withNames ? mapLabelIdsToNames(part as Record<string, unknown>, names) : part;
-      return fenceEmailContent(JSON.stringify(value));
-    };
-    const lines = filters.map((f: any) => `- **${f.id}**: ${describe(f.criteria)} → ${describe(f.action, true)}`);
-    return { content: [{ type: "text", text: lines.join("\n") }] };
-  }, "filters"
-);
 
 function mapLabelIdsToNames(action: Record<string, unknown>, names: Map<string, string>): Record<string, unknown> {
   const named = (ids: unknown) =>
@@ -39,8 +10,28 @@ function mapLabelIdsToNames(action: Record<string, unknown>, names: Map<string, 
   return { ...action, addLabelIds: named(action.addLabelIds), removeLabelIds: named(action.removeLabelIds) };
 }
 
-registerTool(
-  { name: "create_filter", description: "Create a Gmail filter",
+registerTool({
+  definition: { name: "list_filters", description: "List Gmail filters",
+    inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
+  group: "gmail-extras",
+  requiredCapability: "filters",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const filters = await gmail.listFilters();
+    if (filters.length === 0) return { content: [{ type: "text", text: "No filters configured." }] };
+    const names = await gmail.labelNamesById();
+    const describe = (part: unknown, withNames = false) => {
+      if (!part) return "{}";
+      const value = withNames ? mapLabelIdsToNames(part as Record<string, unknown>, names) : part;
+      return fenceEmailContent(JSON.stringify(value));
+    };
+    const lines = filters.map((f) => `- **${f.id}**: ${describe(f.criteria)} → ${describe(f.action, true)}`);
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  },
+});
+
+registerTool({
+  definition: { name: "create_filter", description: "Create a Gmail filter",
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" },
       from: { type: "string", description: "Filter by sender" }, to: { type: "string", description: "Filter by recipient" },
@@ -50,137 +41,136 @@ registerTool(
       create_label: { type: "boolean", description: "Create add_label if no label with that name exists (default false)" },
       archive: { type: "boolean", description: "Skip inbox" }, mark_read: { type: "boolean", description: "Mark as read" },
     }, required: ["account"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const gmail = getGmailApi(provider);
-    const criteria: Record<string, string> = {};
-    if (args.from) criteria.from = args.from as string;
-    if (args.to) criteria.to = args.to as string;
-    if (args.subject) criteria.subject = args.subject as string;
-    if (args.query) criteria.query = args.query as string;
-    if (Object.keys(criteria).length === 0) {
-      return { content: [{ type: "text", text: "A filter needs at least one criterion (from, to, subject, or query)." }], isError: true };
-    }
-    const action: Record<string, any> = {};
-    if (args.add_label) {
-      action.addLabelIds = await (provider as GmailProvider).resolveLabelIds(
-        [args.add_label as string], { create: args.create_label as boolean | undefined }
-      );
-    }
-    if (args.remove_label) {
-      action.removeLabelIds = await (provider as GmailProvider).resolveLabelIds([args.remove_label as string]);
-    }
-    if (args.archive) action.removeLabelIds = [...(action.removeLabelIds ?? []), "INBOX"];
-    if (args.mark_read) action.removeLabelIds = [...(action.removeLabelIds ?? []), "UNREAD"];
-    const res = await gmail.users.settings.filters.create({ userId: "me", requestBody: { criteria, action } });
-    return { content: [{ type: "text", text: `Filter created: ${res.data.id}` }] };
-  }, "filters"
-);
+  group: "gmail-extras",
+  requiredCapability: "filters",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const id = await gmail.createFilter({
+      from: args.from as string | undefined,
+      to: args.to as string | undefined,
+      subject: args.subject as string | undefined,
+      query: args.query as string | undefined,
+      addLabel: args.add_label as string | undefined,
+      removeLabel: args.remove_label as string | undefined,
+      createLabel: args.create_label as boolean | undefined,
+      archive: args.archive as boolean | undefined,
+      markRead: args.mark_read as boolean | undefined,
+    });
+    return { content: [{ type: "text", text: `Filter created: ${id}` }] };
+  },
+});
 
-registerTool(
-  { name: "delete_filter", description: "Delete a Gmail filter",
+registerTool({
+  definition: { name: "delete_filter", description: "Delete a Gmail filter",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, filter_id: { type: "string", description: "Filter ID to delete" } }, required: ["account", "filter_id"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    await gmail.users.settings.filters.delete({ userId: "me", id: args.filter_id as string });
+  group: "gmail-extras",
+  requiredCapability: "filters",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    await gmail.deleteFilter(args.filter_id as string);
     return { content: [{ type: "text", text: `Filter "${args.filter_id}" deleted.` }] };
-  }, "filters"
-);
+  },
+});
 
-// --- Templates ---
-registerTool(
-  { name: "save_template", description: "Save an email template (stored as a Gmail draft with TEMPLATE label)",
+registerTool({
+  definition: { name: "save_template", description: "Save an email template as a Gmail draft labelled mailbox-mcp-template",
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" }, name: { type: "string", description: "Template name" },
       subject: { type: "string", description: "Template subject" }, body: { type: "string", description: "Template body" },
     }, required: ["account", "name", "subject", "body"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const id = await provider.createDraft([], `[TEMPLATE:${args.name}] ${args.subject}`, args.body as string);
+  group: "gmail-extras",
+  requiredCapability: "templates",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const id = await gmail.saveTemplate(args.name as string, args.subject as string, args.body as string);
     return { content: [{ type: "text", text: `Template "${args.name}" saved as draft ${id}.` }] };
-  }, "templates"
-);
+  },
+});
 
-registerTool(
-  { name: "list_templates", description: "List saved email templates",
+registerTool({
+  definition: { name: "list_templates", description: "List saved email templates",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const results = await provider.searchMessages("subject:[TEMPLATE:", 50);
+  group: "gmail-extras",
+  requiredCapability: "templates",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const results = await gmail.listTemplates();
     if (results.length === 0) return { content: [{ type: "text", text: "No templates saved." }] };
     const lines = results.map((m) => `- **${m.id}**: ${fenceEmailContent(m.subject, "subject")}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }, "templates"
-);
+  },
+});
 
-registerTool(
-  { name: "delete_template", description: "Delete a saved template",
+registerTool({
+  definition: { name: "delete_template", description: "Delete a saved template",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Template message ID" } }, required: ["account", "message_id"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    await provider.trashMessages([args.message_id as string]);
+  group: "gmail-extras",
+  requiredCapability: "templates",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    await gmail.deleteTemplate(args.message_id as string);
     return { content: [{ type: "text", text: `Template deleted.` }] };
-  }, "templates"
-);
+  },
+});
 
-registerTool(
-  { name: "send_template", description: "Send an email using a saved template",
+registerTool({
+  definition: { name: "send_template", description: "Send an email using a saved template",
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Template message ID" },
       to: { type: "array", items: { type: "string" }, description: "Recipients" },
     }, required: ["account", "message_id", "to"] } },
-  async (args, ctx) => {
+  group: "gmail-extras",
+  requiredCapability: "templates",
+  handler: async (args, ctx) => {
     const limitError = checkSendLimit(args.account as string);
     if (limitError) return { content: [{ type: "text", text: limitError }], isError: true };
-    const provider = await ctx.getProvider(args.account as string);
-    const template = await provider.readMessage(args.message_id as string);
-    const subject = stripFencing(template.subject).replace(/\[TEMPLATE:[^\]]+\]\s*/, "");
-    const id = await provider.sendMessage(args.to as string[], subject, stripFencing(template.body));
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const id = await gmail.sendTemplate(args.message_id as string, args.to as string[]);
+    recordSuccessfulSend(args.account as string);
     return { content: [{ type: "text", text: `Sent from template. Message ID: ${id}` }] };
-  }, "templates"
-);
+  },
+});
 
-// --- Signatures ---
-registerTool(
-  { name: "get_signature", description: "Get the email signature for a Gmail account",
+registerTool({
+  definition: { name: "get_signature", description: "Get the email signature for a Gmail account",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.settings.sendAs.list({ userId: "me" });
-    const primary = res.data.sendAs?.find((s: any) => s.isPrimary);
-    return { content: [{ type: "text", text: fenceEmailContent(primary?.signature ?? "(no signature set)") }] };
-  }, "signatures"
-);
+  group: "gmail-extras",
+  requiredCapability: "signatures",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const signature = await gmail.getSignature();
+    return { content: [{ type: "text", text: fenceEmailContent(signature || "(no signature set)") }] };
+  },
+});
 
-registerTool(
-  { name: "set_signature", description: "Update the email signature for a Gmail account",
+registerTool({
+  definition: { name: "set_signature", description: "Update the email signature for a Gmail account",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, signature: { type: "string", description: "HTML signature content" } }, required: ["account", "signature"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.settings.sendAs.list({ userId: "me" });
-    const primary = res.data.sendAs?.find((s: any) => s.isPrimary);
-    if (!primary) throw new Error("No primary send-as address found");
-    await (gmail.users.settings.sendAs as any).update({ userId: "me", sendAsEmail: primary.sendAsEmail, requestBody: { signature: args.signature as string } });
+  group: "gmail-extras",
+  requiredCapability: "signatures",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    await gmail.setSignature(args.signature as string);
     return { content: [{ type: "text", text: "Signature updated." }] };
-  }, "signatures"
-);
+  },
+});
 
-// --- Vacation ---
-registerTool(
-  { name: "get_vacation", description: "Get vacation auto-reply settings",
+registerTool({
+  definition: { name: "get_vacation", description: "Get vacation auto-reply settings",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.settings.getVacation({ userId: "me" });
-    const v = res.data;
-    const status = v.enableAutoReply ? "enabled" : "disabled";
-    const text = [`**Status:** ${status}`, v.responseSubject ? `**Subject:** ${fenceEmailContent(v.responseSubject, "subject")}` : "", v.responseBodyHtml ? `**Body:** ${fenceEmailContent(v.responseBodyHtml)}` : ""].filter(Boolean).join("\n");
+  group: "gmail-extras",
+  requiredCapability: "vacation",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const v = await gmail.getVacation();
+    const status = v.enabled ? "enabled" : "disabled";
+    const text = [`**Status:** ${status}`, v.subject ? `**Subject:** ${fenceEmailContent(v.subject, "subject")}` : "", v.bodyHtml ? `**Body:** ${fenceEmailContent(v.bodyHtml)}` : ""].filter(Boolean).join("\n");
     return { content: [{ type: "text", text }] };
-  }, "vacation"
-);
+  },
+});
 
-registerTool(
-  { name: "set_vacation", description: "Configure vacation auto-reply",
+registerTool({
+  definition: { name: "set_vacation", description: "Configure vacation auto-reply",
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" }, enabled: { type: "boolean", description: "Enable or disable auto-reply" },
       subject: { type: "string", description: "Auto-reply subject" }, body: { type: "string", description: "Auto-reply body (HTML)" },
@@ -189,53 +179,56 @@ registerTool(
       contacts_only: { type: "boolean", description: "Only reply to contacts" },
       domain_only: { type: "boolean", description: "Only reply to same domain" },
     }, required: ["account", "enabled"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const settings: Record<string, any> = { enableAutoReply: args.enabled as boolean };
-    if (args.subject) settings.responseSubject = args.subject as string;
-    if (args.body) settings.responseBodyHtml = args.body as string;
-    if (args.start_time) settings.startTime = new Date(args.start_time as string).getTime();
-    if (args.end_time) settings.endTime = new Date(args.end_time as string).getTime();
-    if (args.contacts_only !== undefined) settings.restrictToContacts = args.contacts_only as boolean;
-    if (args.domain_only !== undefined) settings.restrictToDomain = args.domain_only as boolean;
-    await gmail.users.settings.updateVacation({ userId: "me", requestBody: settings });
+  group: "gmail-extras",
+  requiredCapability: "vacation",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    await gmail.setVacation({
+      enabled: args.enabled as boolean,
+      subject: args.subject as string | undefined,
+      body: args.body as string | undefined,
+      startTime: args.start_time as string | undefined,
+      endTime: args.end_time as string | undefined,
+      contactsOnly: args.contacts_only as boolean | undefined,
+      domainOnly: args.domain_only as boolean | undefined,
+    });
     return { content: [{ type: "text", text: `Vacation auto-reply ${args.enabled ? "enabled" : "disabled"}.` }] };
-  }, "vacation"
-);
+  },
+});
 
-// --- Unsubscribe ---
-registerTool(
-  { name: "unsubscribe", description: "Unsubscribe from a mailing list by finding the List-Unsubscribe header",
+registerTool({
+  definition: { name: "unsubscribe", description: "Unsubscribe from a mailing list by finding the List-Unsubscribe header",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Message ID from the mailing list" } }, required: ["account", "message_id"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe"] });
-    const header = res.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe");
-    if (!header?.value) return { content: [{ type: "text", text: "No List-Unsubscribe header found on this message." }], isError: true };
-    return { content: [{ type: "text", text: `Unsubscribe link: ${fenceEmailContent(header.value)}\n\nOpen this URL to unsubscribe.` }] };
-  }, "unsubscribe"
-);
+  group: "gmail-extras",
+  requiredCapability: "unsubscribe",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const header = await gmail.getUnsubscribeHeader(args.message_id as string);
+    if (!header.listUnsubscribe) return { content: [{ type: "text", text: "No List-Unsubscribe header found on this message." }], isError: true };
+    return { content: [{ type: "text", text: `Unsubscribe link: ${fenceEmailContent(header.listUnsubscribe)}\n\nOpen this URL to unsubscribe.` }] };
+  },
+});
 
-registerTool(
-  { name: "bulk_unsubscribe", description: "Find unsubscribe links for multiple mailing list messages",
+registerTool({
+  definition: { name: "bulk_unsubscribe", description: "Find unsubscribe links for multiple mailing list messages",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, message_ids: { type: "array", items: { type: "string" }, description: "Message IDs" } }, required: ["account", "message_ids"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const results: string[] = [];
-    for (const msgId of args.message_ids as string[]) {
-      const res = await gmail.users.messages.get({ userId: "me", id: msgId, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From"] });
-      const headers = res.data.payload?.headers ?? [];
-      const from = headers.find((h: any) => h.name === "From")?.value ?? "unknown";
-      const unsub = headers.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe")?.value;
-      results.push(unsub ? `- ${fenceEmailHeader(from, "from")}: ${fenceEmailContent(unsub)}` : `- ${fenceEmailHeader(from, "from")}: no unsubscribe link`);
-    }
+  group: "gmail-extras",
+  requiredCapability: "unsubscribe",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const rows = await gmail.getUnsubscribeHeaders(args.message_ids as string[]);
+    const results = rows.map((row) => {
+      const from = row.from ?? "unknown";
+      return row.listUnsubscribe
+        ? `- ${fenceEmailHeader(from, "from")}: ${fenceEmailContent(row.listUnsubscribe)}`
+        : `- ${fenceEmailHeader(from, "from")}: no unsubscribe link`;
+    });
     return { content: [{ type: "text", text: results.join("\n") }] };
-  }, "unsubscribe"
-);
+  },
+});
 
-// --- Drafts (update/delete) ---
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "update_draft",
     description: "Replace the contents of an existing Gmail draft. The draft's thread association is preserved automatically.",
     inputSchema: {
@@ -261,41 +254,30 @@ registerTool(
       required: ["account", "draft_id", "to", "subject", "body"],
     },
   },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const gmail = getGmailApi(provider);
-    if (args.from) await (provider as GmailProvider).assertCanSendAs(args.from as string);
-    const existing = await gmail.users.drafts.get({ userId: "me", id: args.draft_id as string, format: "metadata" });
-    const threadId = existing.data.message?.threadId ?? undefined;
+  group: "gmail-extras",
+  requiredCapability: "draftsEdit",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
     const attachments = loadAttachments(args.attachments as string[] | undefined);
-    const encodeOpts: GmailEncodeOptions = {
-      from: args.from as string | undefined,
-      cc: args.cc as string[] | undefined,
-      bcc: args.bcc as string[] | undefined,
-      html: args.html as boolean | undefined,
-      attachments,
-    };
-    const rawBuffer = buildEmailBuffer(args.to as string[], args.subject as string, args.body as string, encodeOpts);
-    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
-      await gmail.users.drafts.update({
-        userId: "me",
-        id: args.draft_id as string,
-        requestBody: { message: { threadId } },
-        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
-      });
-    } else {
-      await gmail.users.drafts.update({
-        userId: "me",
-        id: args.draft_id as string,
-        requestBody: { message: { raw: rawBuffer.toString("base64url"), threadId } },
-      });
-    }
+    await gmail.updateDraft(
+      args.draft_id as string,
+      args.to as string[],
+      args.subject as string,
+      args.body as string,
+      {
+        from: args.from as string | undefined,
+        cc: args.cc as string[] | undefined,
+        bcc: args.bcc as string[] | undefined,
+        html: args.html as boolean | undefined,
+        attachments,
+      },
+    );
     return { content: [{ type: "text", text: `Draft ${args.draft_id} updated.` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "delete_draft",
     description: "Permanently delete a Gmail draft. This cannot be undone.",
     inputSchema: {
@@ -307,22 +289,24 @@ registerTool(
       required: ["account", "draft_id"],
     },
   },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    await gmail.users.drafts.delete({ userId: "me", id: args.draft_id as string });
+  group: "gmail-extras",
+  requiredCapability: "draftsEdit",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    await gmail.deleteDraft(args.draft_id as string);
     return { content: [{ type: "text", text: `Draft ${args.draft_id} deleted.` }] };
-  }
-);
+  },
+});
 
-// --- Send As ---
-registerTool(
-  { name: "list_send_as", description: "List send-as aliases configured on a Gmail account",
+registerTool({
+  definition: { name: "list_send_as", description: "List send-as aliases configured on a Gmail account",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.settings.sendAs.list({ userId: "me" });
-    const aliases = res.data.sendAs ?? [];
-    const lines = aliases.map((a: any) => `- ${a.sendAsEmail}${a.isPrimary ? " (primary)" : ""}`);
+  group: "gmail-extras",
+  requiredCapability: "sendAs",
+  handler: async (args, ctx) => {
+    const gmail = asGmailAccount(await ctx.getProvider(args.account as string));
+    const aliases = await gmail.listSendAs();
+    const lines = aliases.map((a) => `- ${a.email}${a.isPrimary ? " (primary)" : ""}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }, "signatures"
-);
+  },
+});

@@ -15,10 +15,10 @@ function createMockGmail() {
       },
       threads: { get: vi.fn() },
       labels: { list: vi.fn(), get: vi.fn(), create: vi.fn(), delete: vi.fn() },
-      drafts: { create: vi.fn() },
+      drafts: { create: vi.fn(), list: vi.fn(), get: vi.fn(), update: vi.fn(), delete: vi.fn() },
       settings: {
         filters: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
-        sendAs: { list: vi.fn() },
+        sendAs: { list: vi.fn(), update: vi.fn() },
         getVacation: vi.fn(),
         updateVacation: vi.fn(),
       },
@@ -249,6 +249,67 @@ describe("GmailProvider", () => {
       expect(call.media).toBeDefined();
       expect(call.media.mimeType).toBe("message/rfc822");
       expect(call.requestBody.message.raw).toBeUndefined();
+    });
+
+    it("updateDraft uses media upload when attachments are present and preserves threadId", async () => {
+      mockGmail.users.drafts.get.mockResolvedValue({ data: { message: { threadId: "thread-9" } } });
+      mockGmail.users.drafts.update.mockResolvedValue({ data: { id: "draft-1" } });
+      const id = await provider.updateDraft("draft-1", ["x@y.com"], "s", "b", { attachments: [pdfAttachment] });
+      expect(id).toBe("draft-1");
+      const call = mockGmail.users.drafts.update.mock.calls[0][0];
+      expect(call.id).toBe("draft-1");
+      expect(call.requestBody.message.threadId).toBe("thread-9");
+      expect(call.media.mimeType).toBe("message/rfc822");
+      expect(typeof call.media.body.pipe).toBe("function");
+    });
+  });
+
+  it("createFilter resolves a label name to its Gmail label ID", async () => {
+    mockGmail.users.labels.list.mockResolvedValue({
+      data: { labels: [{ id: "Label_7", name: "Investing", type: "user" }] },
+    });
+    mockGmail.users.settings.filters.create.mockResolvedValue({ data: { id: "filter-1" } });
+    const id = await provider.createFilter({ from: "alts.co", addLabel: "Investing", archive: true });
+    expect(id).toBe("filter-1");
+    const body = mockGmail.users.settings.filters.create.mock.calls[0][0].requestBody;
+    expect(body.action.addLabelIds).toEqual(["Label_7"]);
+    expect(body.action.removeLabelIds).toEqual(["INBOX"]);
+  });
+
+  it("listTemplates searches drafts with the mailbox-mcp-template label, not all mail", async () => {
+    mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [] } });
+    await provider.listTemplates();
+    expect(mockGmail.users.messages.list.mock.calls[0][0].q).toBe("in:drafts label:mailbox-mcp-template");
+  });
+
+  it("replyToMessage sets In-Reply-To and References from the original Message-ID", async () => {
+    mockGmail.users.messages.get.mockResolvedValue({
+      data: {
+        threadId: "t1",
+        payload: {
+          headers: [
+            { name: "From", value: "a@b.com" },
+            { name: "To", value: "me@x.com" },
+            { name: "Subject", value: "Hello" },
+            { name: "Message-ID", value: "<orig@x>" },
+            { name: "References", value: "<older@x>" },
+          ],
+        },
+      },
+    });
+    mockGmail.users.messages.send.mockResolvedValue({ data: { id: "r1" } });
+    await provider.replyToMessage("m1", "Thanks");
+    const raw = Buffer.from(mockGmail.users.messages.send.mock.calls[0][0].requestBody.raw, "base64url").toString();
+    expect(raw).toContain("In-Reply-To: <orig@x>");
+    expect(raw).toContain("References: <older@x> <orig@x>");
+  });
+
+  it("undoBulk trash removes the TRASH label", async () => {
+    mockGmail.users.messages.batchModify.mockResolvedValue({});
+    await provider.undoBulk({ kind: "trash", messageIds: ["a", "b"], addLabels: [], removeLabels: [] });
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledWith({
+      userId: "me",
+      requestBody: { ids: ["a", "b"], addLabelIds: [], removeLabelIds: ["TRASH"] },
     });
   });
 

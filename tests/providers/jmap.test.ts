@@ -323,6 +323,12 @@ describe("JmapProvider", () => {
     mockFetch
       .mockResolvedValueOnce(mockSessionResponse())
       .mockResolvedValueOnce(mockApiResponse([
+        ["Email/get", { list: [
+          { id: "m1", mailboxIds: { "mbox-inbox": true } },
+          { id: "m2", mailboxIds: { "mbox-inbox": true } },
+        ] }, "0"],
+      ]))
+      .mockResolvedValueOnce(mockApiResponse([
         ["Mailbox/query", { ids: ["mbox-trash"] }, "0"],
         ["Mailbox/get", { list: [{ id: "mbox-trash", name: "Trash", role: "trash" }] }, "1"],
       ]))
@@ -330,7 +336,7 @@ describe("JmapProvider", () => {
         ["Email/set", { updated: { "m1": null, "m2": null } }, "0"],
       ]));
     await provider.trashMessages(["m1", "m2"]);
-    const apiCall = JSON.parse(mockFetch.mock.calls[2][1].body);
+    const apiCall = JSON.parse(mockFetch.mock.calls[3][1].body);
     const emailSet = apiCall.methodCalls[0];
     expect(emailSet[0]).toBe("Email/set");
     expect(emailSet[1].update.m1.mailboxIds).toEqual({ "mbox-trash": true });
@@ -502,5 +508,91 @@ describe("JmapProvider from address", () => {
     const bodies = mockFetch.mock.calls.slice(1).map((c: any) => JSON.parse(c[1].body));
     const calledIdentityGet = bodies.some((b: any) => b.methodCalls.some((m: any[]) => m[0] === "Identity/get"));
     expect(calledIdentityGet).toBe(false);
+  });
+
+  it("throws on a JMAP method-level error", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["error", { type: "invalidArguments", description: "bad filter" }, "0"],
+      ]));
+    await expect(provider.searchMessages("x")).rejects.toThrow(/JMAP method error: invalidArguments/);
+  });
+
+  it("sendMessage fails when EmailSubmission/set does not create a submission", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { draft0: { id: "m-new" } } }, "0"],
+        ["EmailSubmission/set", { notCreated: { sub0: { type: "forbiddenFrom" } } }, "1"],
+      ]));
+    await expect(provider.sendMessage(["to@example.com"], "Hello", "Body")).rejects.toThrow(/submission failed/);
+  });
+
+  it("replyToMessage sets inReplyTo and references on the created email", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/get", { list: [{
+          id: "m-orig", threadId: "t1",
+          from: [{ email: "original@example.com" }],
+          to: [{ email: "test@fastmail.com" }],
+          cc: [], bcc: [], replyTo: [],
+          subject: "Original", preview: "",
+          receivedAt: "2026-03-31T10:00:00Z",
+          mailboxIds: {}, hasAttachment: false,
+          textBody: [{ partId: "1" }],
+          bodyValues: { "1": { value: "Original body" } },
+          attachments: [],
+          messageId: ["<orig@x>"],
+        }] }, "0"],
+      ]))
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { draft0: { id: "m-reply" } } }, "0"],
+        ["EmailSubmission/set", { created: { sub0: {} } }, "1"],
+      ]));
+    await provider.replyToMessage("m-orig", "Reply body");
+    const apiCall = JSON.parse(mockFetch.mock.calls[2][1].body);
+    const created = apiCall.methodCalls[0][1].create.draft0;
+    expect(created.inReplyTo).toEqual(["<orig@x>"]);
+    expect(created.references).toEqual(["<orig@x>"]);
+  });
+
+  it("downloadAttachment accepts a filename", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/get", { list: [{
+          id: "m1", from: [], to: [], subject: "s", preview: "", receivedAt: "",
+          mailboxIds: {}, hasAttachment: true,
+          attachments: [{ blobId: "B9", name: "invoice.pdf", type: "application/pdf", size: 4 }],
+        }] }, "0"],
+      ]))
+      .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer });
+    const att = await provider.downloadAttachment("m1", "invoice.pdf");
+    expect(att.filename).toBe("invoice.pdf");
+    expect(att.data.length).toBe(4);
+    expect(String(mockFetch.mock.calls[2][0])).toContain("B9");
+  });
+
+  it("undoBulk trash restores previous mailbox ids", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Mailbox/query", { ids: ["mbox-trash"] }, "0"],
+        ["Mailbox/get", { list: [{ id: "mbox-trash", name: "Trash", role: "trash" }] }, "1"],
+      ]))
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { updated: { m1: null } }, "0"],
+      ]));
+    await provider.undoBulk({
+      kind: "trash",
+      messageIds: ["m1"],
+      addLabels: [],
+      removeLabels: [],
+      restore: [{ id: "m1", mailboxIds: ["mbox-inbox"] }],
+    });
+    const apiCall = JSON.parse(mockFetch.mock.calls[2][1].body);
+    expect(apiCall.methodCalls[0][1].update.m1.mailboxIds).toEqual({ "mbox-inbox": true });
   });
 });

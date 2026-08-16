@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { buildRawMimeMessage } from "./mime.js";
-import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList, extractAddress } from "./headers.js";
+import { ensureForwardPrefix, splitAddressList, extractAddress } from "./headers.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
 // the massive googleapis type definitions (which add ~2min to tsc builds).
@@ -26,7 +26,9 @@ import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
   DraftOptions, AttachmentInfo, DraftSummary, UnreadCount, ExportedMessage,
+  BulkUndoRequest, TrashResult,
 } from "./interface.js";
+import { forwardedBody, replyRecipients, replySubject, threadingFor } from "./compose.js";
 
 function getHeader(headers: GmailMessagePartHeader[] | undefined, name: string): string {
   return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
@@ -93,6 +95,8 @@ function parseMessage(data: GmailMessage): EmailMessage {
     hasAttachments: attachments.length > 0,
     body,
     attachments,
+    rfcMessageId: getHeader(headers, "Message-ID") || undefined,
+    references: getHeader(headers, "References") || undefined,
   };
 }
 
@@ -138,6 +142,7 @@ export class GmailProvider implements MailProvider {
     threads: true, filters: true, templates: true,
     signatures: true, vacation: true, unsubscribe: true,
     attachments: true, inboxSummary: true,
+    draftsEdit: true, sendAs: true,
   };
 
   constructor(private gmail: GmailClient) {}
@@ -227,77 +232,90 @@ export class GmailProvider implements MailProvider {
     return { id: threadId, subject: messages[0]?.subject ?? "", messages };
   }
 
-  async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
-    if (options?.from) await this.assertCanSendAs(options.from);
-    const rawBuffer = buildEmailBuffer(to, subject, body, options);
-    if (shouldUseMediaUpload(rawBuffer, options)) {
+  private async sendRaw(
+    raw: Buffer,
+    encodeOpts: GmailEncodeOptions | undefined,
+    dest: { op: "send"; threadId?: string } | { op: "createDraft"; threadId?: string } | { op: "updateDraft"; draftId: string; threadId?: string },
+  ): Promise<string> {
+    const media = shouldUseMediaUpload(raw, encodeOpts)
+      ? { mimeType: "message/rfc822", body: Readable.from(raw) }
+      : undefined;
+    const encoded = media ? undefined : raw.toString("base64url");
+
+    if (dest.op === "send") {
       const res = await this.gmail.users.messages.send({
         userId: "me",
-        requestBody: {},
-        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
+        requestBody: media ? { threadId: dest.threadId } : { raw: encoded, threadId: dest.threadId },
+        media,
       });
       return res.data.id!;
     }
-    const res = await this.gmail.users.messages.send({
+    if (dest.op === "createDraft") {
+      const res = await this.gmail.users.drafts.create({
+        userId: "me",
+        requestBody: { message: media ? { threadId: dest.threadId } : { raw: encoded, threadId: dest.threadId } },
+        media,
+      });
+      return res.data.id!;
+    }
+    await this.gmail.users.drafts.update({
       userId: "me",
-      requestBody: { raw: rawBuffer.toString("base64url") },
+      id: dest.draftId,
+      requestBody: { message: media ? { threadId: dest.threadId } : { raw: encoded, threadId: dest.threadId } },
+      media,
     });
-    return res.data.id!;
+    return dest.draftId;
+  }
+
+  async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
+    if (options?.from) await this.assertCanSendAs(options.from);
+    const rawBuffer = buildEmailBuffer(to, subject, body, options);
+    return this.sendRaw(rawBuffer, options, { op: "send" });
   }
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
     if (options?.from) await this.assertCanSendAs(options.from);
     const original = await this.gmail.users.messages.get({
       userId: "me", id: messageId, format: "metadata",
-      metadataHeaders: ["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"],
+      metadataHeaders: ["From", "To", "Cc", "Subject", "Message-ID", "References", "Reply-To"],
     });
     const headers = original.data.payload?.headers ?? [];
-    const from = getHeader(headers, "From");
-    const replyTo = getHeader(headers, "Reply-To");
-    const to = getHeader(headers, "To");
-    const cc = getHeader(headers, "Cc");
-    const subject = getHeader(headers, "Subject");
-    const msgId = getHeader(headers, "Message-ID");
-
-    const replyAddress = replyTo || from;
-    const recipients = options?.replyAll
-      ? [replyAddress, ...splitAddressList(to), ...splitAddressList(cc)].filter(Boolean)
-      : [replyAddress];
-
-    const reSubject = ensureReplyPrefix(subject);
+    const parsed: EmailMessage = {
+      id: messageId,
+      from: getHeader(headers, "From"),
+      to: splitAddressList(getHeader(headers, "To")),
+      cc: splitAddressList(getHeader(headers, "Cc")),
+      bcc: [],
+      subject: getHeader(headers, "Subject"),
+      snippet: "",
+      date: "",
+      labels: [],
+      hasAttachments: false,
+      body: "",
+      attachments: [],
+      replyTo: getHeader(headers, "Reply-To") || undefined,
+      rfcMessageId: getHeader(headers, "Message-ID") || undefined,
+      references: getHeader(headers, "References") || undefined,
+    };
+    const thread = threadingFor(parsed);
     const encodeOpts: GmailEncodeOptions = {
       from: options?.from,
       html: options?.html,
       cc: options?.cc,
       bcc: options?.bcc,
-      inReplyTo: msgId,
-      references: msgId,
+      inReplyTo: thread.inReplyTo,
+      references: thread.references,
       attachments: options?.attachments,
     };
-    const rawBuffer = buildEmailBuffer(recipients, reSubject, body, encodeOpts);
-    const threadId = original.data.threadId ?? undefined;
-    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
-      const res = await this.gmail.users.messages.send({
-        userId: "me",
-        requestBody: { threadId },
-        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
-      });
-      return res.data.id!;
-    }
-    const res = await this.gmail.users.messages.send({
-      userId: "me",
-      requestBody: { raw: rawBuffer.toString("base64url"), threadId },
-    });
-    return res.data.id!;
+    const rawBuffer = buildEmailBuffer(replyRecipients(parsed, options?.replyAll), replySubject(parsed.subject), body, encodeOpts);
+    return this.sendRaw(rawBuffer, encodeOpts, { op: "send", threadId: original.data.threadId ?? undefined });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
     const original = await this.fetchMessage(messageId);
-    const fwdBody = options?.message
-      ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
-      : `---------- Forwarded message ----------\n${original.body}`;
-    const fwdSubject = ensureForwardPrefix(original.subject);
-    return this.sendMessage(to, fwdSubject, fwdBody, { from: options?.from, html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, ensureForwardPrefix(original.subject), forwardedBody(original, options?.message), {
+      from: options?.from, html: options?.html, attachments: options?.attachments,
+    });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
@@ -311,42 +329,34 @@ export class GmailProvider implements MailProvider {
         metadataHeaders: ["Message-ID", "References"],
       });
       const headers = original.data.payload?.headers ?? [];
-      const origMessageId = getHeader(headers, "Message-ID");
-      const origReferences = getHeader(headers, "References");
       threadId = original.data.threadId ?? undefined;
-      replyHeaders = {
-        inReplyTo: origMessageId,
-        references: origReferences ? `${origReferences} ${origMessageId}` : origMessageId,
-      };
+      replyHeaders = threadingFor({
+        rfcMessageId: getHeader(headers, "Message-ID") || undefined,
+        references: getHeader(headers, "References") || undefined,
+      });
     }
 
     const encodeOpts: GmailEncodeOptions = { ...options, ...replyHeaders };
     const rawBuffer = buildEmailBuffer(to, subject, body, encodeOpts);
-    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
-      const res = await this.gmail.users.drafts.create({
-        userId: "me",
-        requestBody: { message: { threadId } },
-        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
-      });
-      return res.data.id!;
-    }
-    const res = await this.gmail.users.drafts.create({
-      userId: "me",
-      requestBody: { message: { raw: rawBuffer.toString("base64url"), threadId } },
-    });
-    return res.data.id!;
+    return this.sendRaw(rawBuffer, encodeOpts, { op: "createDraft", threadId });
   }
 
-  async trashMessages(messageIds: string[]): Promise<void> {
-    // Gmail's batchModify accepts up to 1000 ids per call; adding the TRASH label
-    // is equivalent to users.messages.trash but avoids N sequential round trips
-    // (which stalls the MCP connection on large batches).
+  async trashMessages(messageIds: string[]): Promise<TrashResult[]> {
     for (const chunk of chunkIds(messageIds, 1000)) {
       await this.gmail.users.messages.batchModify({
         userId: "me",
         requestBody: { ids: chunk, addLabelIds: ["TRASH"] },
       });
     }
+    return messageIds.map((id) => ({ id }));
+  }
+
+  async undoBulk(request: BulkUndoRequest): Promise<void> {
+    if (request.kind === "modify") {
+      await this.batchModifyLabels(request.messageIds, request.addLabels, request.removeLabels);
+      return;
+    }
+    await this.batchModifyLabels(request.messageIds, [], ["TRASH"]);
   }
 
   async listLabels(): Promise<Label[]> {
@@ -469,21 +479,30 @@ export class GmailProvider implements MailProvider {
   async listDrafts(maxResults: number = 20): Promise<DraftSummary[]> {
     const res = await this.gmail.users.drafts.list({ userId: "me", maxResults });
     const drafts = res.data.drafts ?? [];
-    const results: DraftSummary[] = [];
-    for (const d of drafts) {
-      const full = await this.gmail.users.drafts.get({ userId: "me", id: d.id!, format: "metadata" });
-      const headers = full.data.message?.payload?.headers ?? [];
-      results.push({
-        id: d.id!,
-        messageId: full.data.message?.id ?? undefined,
-        subject: getHeader(headers, "Subject"),
-        to: splitAddressList(getHeader(headers, "To")),
-        snippet: full.data.message?.snippet ?? "",
-        updatedAt: full.data.message?.internalDate
-          ? new Date(parseInt(full.data.message.internalDate, 10)).toISOString()
-          : "",
-      });
+    const CONCURRENCY = 20;
+    const results: DraftSummary[] = new Array(drafts.length);
+    let cursor = 0;
+    const self = this;
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= drafts.length) return;
+        const d = drafts[i];
+        const full = await self.gmail.users.drafts.get({ userId: "me", id: d.id!, format: "metadata" });
+        const headers = full.data.message?.payload?.headers ?? [];
+        results[i] = {
+          id: d.id!,
+          messageId: full.data.message?.id ?? undefined,
+          subject: getHeader(headers, "Subject"),
+          to: splitAddressList(getHeader(headers, "To")),
+          snippet: full.data.message?.snippet ?? "",
+          updatedAt: full.data.message?.internalDate
+            ? new Date(parseInt(full.data.message.internalDate, 10)).toISOString()
+            : "",
+        };
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, drafts.length) }, () => worker()));
     return results;
   }
 
@@ -538,5 +557,233 @@ export class GmailProvider implements MailProvider {
     return this.searchMessages(`after:${epoch}${labelPart}`, maxResults);
   }
 
-  get gmailApi() { return this.gmail; }
+  // --- Gmail-only extras. Tools talk to these methods, not the raw client. ---
+
+  async listFilters(): Promise<GmailFilter[]> {
+    const res = await this.gmail.users.settings.filters.list({ userId: "me" });
+    return (res.data.filter ?? []).map((f: any) => ({
+      id: String(f.id ?? ""),
+      criteria: f.criteria,
+      action: f.action,
+    }));
+  }
+
+  async createFilter(input: GmailFilterInput): Promise<string> {
+    const criteria: Record<string, string> = {};
+    if (input.from) criteria.from = input.from;
+    if (input.to) criteria.to = input.to;
+    if (input.subject) criteria.subject = input.subject;
+    if (input.query) criteria.query = input.query;
+    if (Object.keys(criteria).length === 0) {
+      throw new Error("A filter needs at least one criterion (from, to, subject, or query).");
+    }
+    const action: Record<string, unknown> = {};
+    if (input.addLabel) {
+      action.addLabelIds = await this.resolveLabelIds([input.addLabel], { create: input.createLabel });
+    }
+    if (input.removeLabel) {
+      action.removeLabelIds = await this.resolveLabelIds([input.removeLabel]);
+    }
+    if (input.archive) {
+      action.removeLabelIds = [...((action.removeLabelIds as string[] | undefined) ?? []), "INBOX"];
+    }
+    if (input.markRead) {
+      action.removeLabelIds = [...((action.removeLabelIds as string[] | undefined) ?? []), "UNREAD"];
+    }
+    const res = await this.gmail.users.settings.filters.create({
+      userId: "me", requestBody: { criteria, action },
+    });
+    return res.data.id!;
+  }
+
+  async deleteFilter(filterId: string): Promise<void> {
+    await this.gmail.users.settings.filters.delete({ userId: "me", id: filterId });
+  }
+
+  async updateDraft(
+    draftId: string,
+    to: string[],
+    subject: string,
+    body: string,
+    options?: GmailEncodeOptions,
+  ): Promise<string> {
+    if (options?.from) await this.assertCanSendAs(options.from);
+    const existing = await this.gmail.users.drafts.get({ userId: "me", id: draftId, format: "metadata" });
+    const threadId = existing.data.message?.threadId ?? undefined;
+    const rawBuffer = buildEmailBuffer(to, subject, body, options);
+    return this.sendRaw(rawBuffer, options, { op: "updateDraft", draftId, threadId });
+  }
+
+  async deleteDraft(draftId: string): Promise<void> {
+    await this.gmail.users.drafts.delete({ userId: "me", id: draftId });
+  }
+
+  async getSignature(): Promise<string> {
+    const primary = await this.primarySendAs();
+    return primary?.signature ?? "";
+  }
+
+  async setSignature(signature: string): Promise<void> {
+    const primary = await this.primarySendAs();
+    if (!primary?.sendAsEmail) throw new Error("No primary send-as address found");
+    await this.gmail.users.settings.sendAs.update({
+      userId: "me",
+      sendAsEmail: primary.sendAsEmail,
+      requestBody: { signature },
+    });
+  }
+
+  async listSendAs(): Promise<GmailSendAs[]> {
+    const res = await this.gmail.users.settings.sendAs.list({ userId: "me" });
+    return (res.data.sendAs ?? []).map((a: any) => ({
+      email: String(a.sendAsEmail ?? ""),
+      isPrimary: Boolean(a.isPrimary),
+      signature: a.signature ?? undefined,
+    }));
+  }
+
+  async getVacation(): Promise<GmailVacation> {
+    const res = await this.gmail.users.settings.getVacation({ userId: "me" });
+    const v = res.data ?? {};
+    return {
+      enabled: Boolean(v.enableAutoReply),
+      subject: v.responseSubject ?? undefined,
+      bodyHtml: v.responseBodyHtml ?? undefined,
+    };
+  }
+
+  async setVacation(input: GmailVacationInput): Promise<void> {
+    const settings: Record<string, unknown> = { enableAutoReply: input.enabled };
+    if (input.subject) settings.responseSubject = input.subject;
+    if (input.body) settings.responseBodyHtml = input.body;
+    if (input.startTime) settings.startTime = new Date(input.startTime).getTime();
+    if (input.endTime) settings.endTime = new Date(input.endTime).getTime();
+    if (input.contactsOnly !== undefined) settings.restrictToContacts = input.contactsOnly;
+    if (input.domainOnly !== undefined) settings.restrictToDomain = input.domainOnly;
+    await this.gmail.users.settings.updateVacation({ userId: "me", requestBody: settings });
+  }
+
+  async getUnsubscribeHeader(messageId: string): Promise<{ from?: string; listUnsubscribe?: string }> {
+    const res = await this.gmail.users.messages.get({
+      userId: "me", id: messageId, format: "metadata",
+      metadataHeaders: ["List-Unsubscribe", "From"],
+    });
+    const headers = res.data.payload?.headers ?? [];
+    return {
+      from: headers.find((h: GmailMessagePartHeader) => h.name === "From")?.value ?? undefined,
+      listUnsubscribe: headers.find((h: GmailMessagePartHeader) => h.name?.toLowerCase() === "list-unsubscribe")?.value ?? undefined,
+    };
+  }
+
+  async getUnsubscribeHeaders(messageIds: string[]): Promise<Array<{ from?: string; listUnsubscribe?: string }>> {
+    const out = [];
+    for (const id of messageIds) {
+      out.push(await this.getUnsubscribeHeader(id));
+    }
+    return out;
+  }
+
+  async saveTemplate(name: string, subject: string, body: string): Promise<string> {
+    const labelId = (await this.resolveLabelIds([TEMPLATE_LABEL], { create: true }))[0];
+    const draftId = await this.createDraft([], `[TEMPLATE:${name}] ${subject}`, body);
+    const draft = await this.gmail.users.drafts.get({ userId: "me", id: draftId, format: "minimal" });
+    const messageId = draft.data.message?.id;
+    if (messageId) await this.modifyLabels(messageId, [labelId], []);
+    return draftId;
+  }
+
+  async listTemplates(): Promise<EmailSummary[]> {
+    try {
+      return await this.searchMessages(`in:drafts label:${TEMPLATE_LABEL}`, 50);
+    } catch {
+      return [];
+    }
+  }
+
+  async deleteTemplate(messageId: string): Promise<void> {
+    await this.trashMessages([messageId]);
+  }
+
+  async sendTemplate(messageId: string, to: string[]): Promise<string> {
+    const template = await this.readMessage(messageId);
+    const subject = template.subject.replace(/\[TEMPLATE:[^\]]+\]\s*/, "");
+    return this.sendMessage(to, subject, template.body);
+  }
+
+  private async primarySendAs(): Promise<{ sendAsEmail?: string; signature?: string; isPrimary?: boolean } | undefined> {
+    const res = await this.gmail.users.settings.sendAs.list({ userId: "me" });
+    return (res.data.sendAs ?? []).find((s: any) => s.isPrimary);
+  }
+}
+
+const TEMPLATE_LABEL = "mailbox-mcp-template";
+
+export interface GmailFilter {
+  id: string;
+  criteria?: unknown;
+  action?: unknown;
+}
+
+export interface GmailFilterInput {
+  from?: string;
+  to?: string;
+  subject?: string;
+  query?: string;
+  addLabel?: string;
+  removeLabel?: string;
+  createLabel?: boolean;
+  archive?: boolean;
+  markRead?: boolean;
+}
+
+export interface GmailSendAs {
+  email: string;
+  isPrimary: boolean;
+  signature?: string;
+}
+
+export interface GmailVacation {
+  enabled: boolean;
+  subject?: string;
+  bodyHtml?: string;
+}
+
+export interface GmailVacationInput {
+  enabled: boolean;
+  subject?: string;
+  body?: string;
+  startTime?: string;
+  endTime?: string;
+  contactsOnly?: boolean;
+  domainOnly?: boolean;
+}
+
+/** Narrow a MailProvider to the Gmail extras surface. Mocks implement these methods. */
+export interface GmailAccount extends MailProvider {
+  listFilters(): Promise<GmailFilter[]>;
+  createFilter(input: GmailFilterInput): Promise<string>;
+  deleteFilter(filterId: string): Promise<void>;
+  updateDraft(draftId: string, to: string[], subject: string, body: string, options?: GmailEncodeOptions): Promise<string>;
+  deleteDraft(draftId: string): Promise<void>;
+  getSignature(): Promise<string>;
+  setSignature(signature: string): Promise<void>;
+  listSendAs(): Promise<GmailSendAs[]>;
+  getVacation(): Promise<GmailVacation>;
+  setVacation(input: GmailVacationInput): Promise<void>;
+  getUnsubscribeHeader(messageId: string): Promise<{ from?: string; listUnsubscribe?: string }>;
+  getUnsubscribeHeaders(messageIds: string[]): Promise<Array<{ from?: string; listUnsubscribe?: string }>>;
+  saveTemplate(name: string, subject: string, body: string): Promise<string>;
+  listTemplates(): Promise<EmailSummary[]>;
+  deleteTemplate(messageId: string): Promise<void>;
+  sendTemplate(messageId: string, to: string[]): Promise<string>;
+  labelNamesById(): Promise<Map<string, string>>;
+  resolveLabelIds(labels: string[], opts?: { create?: boolean }): Promise<string[]>;
+  assertCanSendAs(from: string): Promise<void>;
+}
+
+export function asGmailAccount(provider: MailProvider): GmailAccount {
+  if (provider.type !== "gmail" || typeof (provider as GmailAccount).listFilters !== "function") {
+    throw new Error("This tool requires a Gmail account");
+  }
+  return provider as GmailAccount;
 }

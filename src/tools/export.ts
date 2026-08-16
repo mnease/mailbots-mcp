@@ -1,11 +1,8 @@
-import { join, basename } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { registerTool } from "./registry.js";
-import { validateAttachmentPath } from "../security/validation.js";
-import { DEFAULT_DOWNLOAD_DIR, validateSavePath } from "../security/save-path.js";
+import { writeDownload } from "../security/save-file.js";
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "export_email",
     description: "Export an email as a raw RFC 822 .eml file to a safe directory. Useful for archival, legal discovery, or migration.",
     inputSchema: {
@@ -18,28 +15,17 @@ registerTool(
       required: ["account", "message_id"],
     },
   },
-  async (args, ctx) => {
+  group: "attachments",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const result = await provider.exportMessage(args.message_id as string);
-
-    validateAttachmentPath(result.filename);
-    const safeName = basename(result.filename);
-
-    const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
-    validateSavePath(dir);
-
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
-
-    const filePath = join(dir, safeName);
-    writeFileSync(filePath, result.data, { mode: 0o600 });
-    chmodSync(filePath, 0o600);
-
+    const filePath = writeDownload(args.save_to as string | undefined, result.filename, result.data);
     return { content: [{ type: "text", text: `Exported "${result.filename}" (${result.data.length} bytes) to ${filePath}` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "export_thread",
     description: "Export all messages in a thread as individual .eml files to a safe directory. Gmail/JMAP only.",
     inputSchema: {
@@ -52,24 +38,16 @@ registerTool(
       required: ["account", "thread_id"],
     },
   },
-  async (args, ctx) => {
+  group: "attachments",
+  requiredCapability: "threads",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const thread = await provider.readThread(args.thread_id as string);
-
-    const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
-    validateSavePath(dir);
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
-
     const written: string[] = [];
     for (const msg of thread.messages) {
       const exported = await provider.exportMessage(msg.id);
-      validateAttachmentPath(exported.filename);
-      const filePath = join(dir, basename(exported.filename));
-      writeFileSync(filePath, exported.data, { mode: 0o600 });
-      chmodSync(filePath, 0o600);
-      written.push(filePath);
+      written.push(writeDownload(args.save_to as string | undefined, exported.filename, exported.data));
     }
     return { content: [{ type: "text", text: `Exported ${written.length} messages from thread ${args.thread_id}:\n${written.join("\n")}` }] };
   },
-  "threads"
-);
+});

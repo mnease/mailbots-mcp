@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { getAllToolDefinitions, handleToolCall, TOOL_GROUPS, type ToolContext } from "../../src/tools/registry.js";
+import { getAllToolDefinitions, handleToolCall, registeredToolGroups, type ToolContext } from "../../src/tools/registry.js";
 import "../../src/tools/account.js";
 import "../../src/tools/read.js";
 import "../../src/tools/write.js";
@@ -27,9 +27,9 @@ describe("tool groups", () => {
 
   it("assigns a group to every registered tool", () => {
     delete process.env.MAILBOX_MCP_TOOLS;
+    const groups = registeredToolGroups();
     const names = getAllToolDefinitions().map((d) => d.name);
-    const unmapped = names.filter((n) => !(n in TOOL_GROUPS));
-    expect(unmapped).toEqual([]);
+    expect(names.filter((n) => !(n in groups))).toEqual([]);
   });
 
   it("filters the tool list to the enabled groups", () => {
@@ -39,7 +39,9 @@ describe("tool groups", () => {
     expect(names).toContain("send_email");
     expect(names).not.toContain("bulk_trash");
     expect(names).not.toContain("create_filter");
-    const expectedCore = Object.values(TOOL_GROUPS).filter((g) => g === "core").length;
+    expect(names).not.toContain("update_draft");
+    expect(names).not.toContain("delete_draft");
+    const expectedCore = Object.values(registeredToolGroups()).filter((g) => g === "core").length;
     expect(names.length).toBe(expectedCore);
   });
 
@@ -61,5 +63,11 @@ describe("tool groups", () => {
     process.env.MAILBOX_MCP_TOOLS = "core";
     const result = await handleToolCall("list_accounts", {}, ctx);
     expect(result.content[0].text).not.toContain("disabled");
+  });
+
+  it("places update_draft and delete_draft in gmail-extras", () => {
+    const groups = registeredToolGroups();
+    expect(groups.update_draft).toBe("gmail-extras");
+    expect(groups.delete_draft).toBe("gmail-extras");
   });
 });

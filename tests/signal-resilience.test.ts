@@ -15,8 +15,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (p: ChildProcess) => p.exitCode === null && p.signalCode === null;
 
 async function startServer(): Promise<ChildProcess> {
-  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "ignore"] });
-  await sleep(500); // let main() connect the stdio transport
+  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "ignore"], detached: true });
+  await sleep(800);
   if (!alive(p)) throw new Error("server exited during startup");
   return p;
 }

@@ -183,11 +183,13 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 
 | Group | Tools | What it covers |
 |-------|-------|----------------|
-| `core` | 19 | accounts, search, read, send, reply, forward, drafts, inbox summary (~2,900 tokens) |
+| `core` | 17 | accounts, search, read, send, reply, forward, create/list/send draft, inbox summary |
 | `organize` | 9 | labels, star, archive, trash, modify |
-| `bulk` | 4 | query-wide modify/trash with dry-run and undo |
+| `bulk` | 4 | query-wide modify/trash with dry-run and undo (undo restores trash on Gmail, IMAP, and JMAP) |
 | `attachments` | 3 | download attachments, export `.eml` |
-| `gmail-extras` | 14 | filters, templates, signatures, vacation, unsubscribe, send-as |
+| `gmail-extras` | 16 | filters, templates, signatures, vacation, unsubscribe, send-as, update/delete draft |
+
+`create_draft` on IMAP returns a `folder:uid` id that `send_draft` can send.
 
 Calls to tools in disabled groups fail with an error naming the group to enable.
 

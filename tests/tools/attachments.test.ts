@@ -10,7 +10,7 @@ describe("attachment tools", () => {
   beforeEach(() => {
     mockProvider = {
       type: "gmail",
-      capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
+      capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true, draftsEdit: true, sendAs: true },
       downloadAttachment: vi.fn().mockResolvedValue({ filename: "invoice.pdf", data: Buffer.from("fake-pdf"), mimeType: "application/pdf" }),
     } as unknown as MailProvider;
     ctx = { accountManager: { listAccounts: vi.fn(), getAccount: vi.fn() } as any, getProvider: vi.fn().mockReturnValue(mockProvider) };
@@ -21,11 +21,11 @@ describe("attachment tools", () => {
     expect(result.content[0].text).toContain("invoice.pdf");
   });
 
-  it("blocks path traversal in filename", async () => {
+  it("strips path traversal from the stored filename via basename", async () => {
     (mockProvider.downloadAttachment as any).mockResolvedValue({ filename: "../../etc/passwd", data: Buffer.from("evil"), mimeType: "text/plain" });
-    const result = await handleToolCall("download_attachment", { account: "personal", message_id: "msg-1", attachment_id: "att-1" }, ctx);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("traversal");
+    const result = await handleToolCall("download_attachment", { account: "personal", message_id: "msg-1", attachment_id: "att-1", save_to: "/tmp/mailbox-mcp-test" }, ctx);
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toMatch(/mailbox-mcp-test\/passwd/);
   });
 
   it("blocks saving to disallowed directories", async () => {

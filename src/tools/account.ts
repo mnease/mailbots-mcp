@@ -1,13 +1,16 @@
+import { rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "list_accounts",
     description: "List all configured email accounts with their provider type and email address",
     inputSchema: { type: "object" as const, properties: {} },
   },
-  async (_args, ctx) => {
+  group: "core",
+  handler: async (_args, ctx) => {
     const accounts = ctx.accountManager.listAccounts();
     const entries = Object.entries(accounts);
     if (entries.length === 0) {
@@ -15,11 +18,11 @@ registerTool(
     }
     const lines = entries.map(([alias, config]) => `- **${alias}** (${config.provider}): ${config.email}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "authenticate",
     description: "Add a new email account. For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
     inputSchema: {
@@ -39,15 +42,35 @@ registerTool(
       required: ["alias", "provider", "email"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const alias = args.alias as string;
     const provider = args.provider as string;
     const email = args.email as string;
 
+    try {
+      ctx.accountManager.assertAliasAvailable(alias);
+    } catch (e: any) {
+      return { content: [{ type: "text", text: e.message }], isError: true };
+    }
+
+    const configDir = ctx.accountManager.getConfigDir();
+    const rollbackDir = () => {
+      const dir = join(configDir, "accounts", alias);
+      if (existsSync(dir) && !ctx.accountManager.listAccounts()[alias]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
     if (provider === "gmail") {
-      ctx.accountManager.addAccount(alias, { provider: "gmail", email });
-      const { authenticateGmail } = await import("../auth/gmail-oauth.js");
-      await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
+      try {
+        const { authenticateGmail } = await import("../auth/gmail-oauth.js");
+        await authenticateGmail(configDir, alias);
+        ctx.accountManager.addAccount(alias, { provider: "gmail", email });
+      } catch (e) {
+        rollbackDir();
+        throw e;
+      }
       return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.` }] };
     }
 
@@ -63,14 +86,18 @@ registerTool(
       if (!host || !smtpHost || !username || !password) {
         return { content: [{ type: "text", text: "IMAP accounts require: host, smtpHost, username, and password" }], isError: true };
       }
-
       if (!passphrase) {
         return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
-      ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
-      const { encryptCredentials } = await import("../auth/imap-auth.js");
-      encryptCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
+      try {
+        const { encryptCredentialsFile } = await import("../auth/credentials.js");
+        encryptCredentialsFile(configDir, alias, { username, password }, passphrase, "IMAP");
+        ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
+      } catch (e) {
+        rollbackDir();
+        throw e;
+      }
       return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
@@ -84,12 +111,10 @@ registerTool(
       if (!host || !username || !password) {
         return { content: [{ type: "text", text: "JMAP accounts require: host, username, and password" }], isError: true };
       }
-
       if (!passphrase) {
         return { content: [{ type: "text", text: "JMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
-      // Validate sessionUrl early: must be HTTPS and not target private networks
       if (sessionUrl) {
         const { validateNoSSRF } = await import("../security/validation.js");
         try {
@@ -103,20 +128,26 @@ registerTool(
         }
       }
 
-      const config: any = { provider: "jmap" as const, email, host };
-      if (sessionUrl) config.sessionUrl = sessionUrl;
-      ctx.accountManager.addAccount(alias, config);
-      const { encryptJmapCredentials } = await import("../auth/jmap-auth.js");
-      encryptJmapCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
+      try {
+        const { encryptCredentialsFile } = await import("../auth/credentials.js");
+        encryptCredentialsFile(configDir, alias, { username, password }, passphrase, "JMAP");
+        const config = sessionUrl
+          ? { provider: "jmap" as const, email, host, sessionUrl }
+          : { provider: "jmap" as const, email, host };
+        ctx.accountManager.addAccount(alias, config);
+      } catch (e) {
+        rollbackDir();
+        throw e;
+      }
       return { content: [{ type: "text", text: `JMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
     return { content: [{ type: "text", text: `Unknown provider: ${provider}` }], isError: true };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "reauth",
     description: "Re-run OAuth for an existing Gmail account without removing it. Opens a browser for Google sign-in. Use when the refresh token expires (invalid_grant) or scopes change.",
     inputSchema: {
@@ -125,7 +156,8 @@ registerTool(
       required: ["alias"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const alias = args.alias as string;
     const account = ctx.accountManager.getAccount(alias);
     if (account.provider !== "gmail") {
@@ -138,11 +170,11 @@ registerTool(
     await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
     ctx.clearProviderCache?.(alias);
     return { content: [{ type: "text", text: `Gmail account "${alias}" (${account.email}) re-authenticated successfully.` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "remove_account",
     description: "Remove a configured email account and its stored credentials",
     inputSchema: {
@@ -151,11 +183,12 @@ registerTool(
       required: ["alias"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const alias = args.alias as string;
     ctx.accountManager.removeAccount(alias);
     ctx.clearProviderCache?.(alias);
     clearSendLimit(alias);
     return { content: [{ type: "text", text: `Account "${alias}" removed.` }] };
-  }
-);
+  },
+});

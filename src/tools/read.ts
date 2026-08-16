@@ -1,8 +1,8 @@
 import { registerTool } from "./registry.js";
 import { fenceEmailContent, fenceEmailHeader } from "../security/sanitize.js";
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "search_emails",
     description: "Search emails in an account. Gmail supports full Gmail search syntax. IMAP searches subject and body. Optional folder parameter scopes the search to a specific label/folder.",
     inputSchema: {
@@ -16,7 +16,8 @@ registerTool(
       required: ["account", "query"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const results = await provider.searchMessages(
       args.query as string,
@@ -26,11 +27,11 @@ registerTool(
     if (results.length === 0) return { content: [{ type: "text", text: "No messages found." }] };
     const lines = results.map((m) => `**${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")}\n  ${fenceEmailContent(m.snippet)} (${m.date})`);
     return { content: [{ type: "text", text: lines.join("\n\n") }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "read_email",
     description: "Read a single email message with full content",
     inputSchema: {
@@ -42,7 +43,8 @@ registerTool(
       required: ["account", "message_id"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const msg = await provider.readMessage(args.message_id as string);
     const text = [
@@ -53,11 +55,11 @@ registerTool(
       "", fenceEmailContent(msg.body),
     ].filter(Boolean).join("\n");
     return { content: [{ type: "text", text }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "read_thread",
     description: "Read an entire email conversation thread (Gmail and JMAP only)",
     inputSchema: {
@@ -69,7 +71,9 @@ registerTool(
       required: ["account", "thread_id"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  requiredCapability: "threads",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const thread = await provider.readThread(args.thread_id as string);
     const text = [
@@ -78,11 +82,10 @@ registerTool(
     ].join("\n");
     return { content: [{ type: "text", text }] };
   },
-  "threads"
-);
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "inbox_summary",
     description: "Get a summary of recent inbox activity including total and unread counts",
     inputSchema: {
@@ -91,11 +94,12 @@ registerTool(
       required: ["account"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const summary = await provider.inboxSummary();
     const recentLines = summary.recent.map((m) => `- ${fenceEmailHeader(m.from, "from")}: ${fenceEmailContent(m.subject, "subject")} (${m.date})`);
     const text = [`**Total:** ${summary.total}`, `**Unread:** ${summary.unread}`, "", "**Recent:**", ...recentLines].join("\n");
     return { content: [{ type: "text", text }] };
-  }
-);
+  },
+});

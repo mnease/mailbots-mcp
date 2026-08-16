@@ -16,14 +16,15 @@ import "../../src/tools/manage.js";
 function createMockProvider(): MailProvider {
   return {
     type: "gmail",
-    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
+    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true, draftsEdit: true, sendAs: true },
     listLabels: vi.fn().mockResolvedValue([{ id: "INBOX", name: "INBOX", type: "system" }, { id: "Label_1", name: "Work", type: "user" }]),
     createLabel: vi.fn().mockResolvedValue({ id: "Label_2", name: "New", type: "user" }),
     deleteLabel: vi.fn().mockResolvedValue(undefined),
     modifyLabels: vi.fn().mockResolvedValue(undefined),
     batchModifyLabels: vi.fn().mockResolvedValue(undefined),
-    trashMessages: vi.fn().mockResolvedValue(undefined),
+    trashMessages: vi.fn().mockImplementation(async (ids: string[]) => ids.map((id) => ({ id }))),
     findMessageIds: vi.fn().mockResolvedValue([]),
+    undoBulk: vi.fn().mockResolvedValue(undefined),
   } as unknown as MailProvider;
 }
 
@@ -155,21 +156,28 @@ describe("transaction log and undo", () => {
     expect(list.content[0].text).toContain("count=3");
     expect(list.content[0].text).toContain("-[INBOX]");
 
-    // Undo replays the inverse against the exact ids.
     const undo = await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
     expect(undo.content[0].text).toContain("Reversed");
-    expect(mockProvider.batchModifyLabels).toHaveBeenLastCalledWith(["m1", "m2", "m3"], ["INBOX"], []);
+    expect(mockProvider.undoBulk).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "modify",
+      messageIds: ["m1", "m2", "m3"],
+      addLabels: ["INBOX"],
+      removeLabels: [],
+    }));
   });
 
-  it("bulk_trash records TRASH as the added label so undo removes it", async () => {
+  it("bulk_trash undo goes through provider.undoBulk as kind trash", async () => {
     (mockProvider.findMessageIds as any).mockResolvedValue(["t1", "t2"]);
     const trashed = await handleToolCall("bulk_trash", { account: "personal", query: "label:Junk" }, ctx);
     const opId = trashed.content[0].text.match(/id=([a-f0-9]+)/)![1];
 
     const undo = await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
     expect(undo.content[0].text).toContain("Reversed");
-    // Undo of trash = remove the TRASH label.
-    expect(mockProvider.batchModifyLabels).toHaveBeenLastCalledWith(["t1", "t2"], [], ["TRASH"]);
+    expect(mockProvider.undoBulk).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "trash",
+      messageIds: ["t1", "t2"],
+    }));
+    expect(mockProvider.batchModifyLabels).not.toHaveBeenCalled();
   });
 
   it("undo_bulk_op refuses to re-reverse an already-reversed op", async () => {

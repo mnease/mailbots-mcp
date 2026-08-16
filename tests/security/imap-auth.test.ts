@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { encryptCredentials, decryptCredentials } from "../../src/auth/imap-auth.js";
+import { encryptCredentialsFile, decryptCredentialsFile } from "../../src/auth/credentials.js";
+
+const encryptCredentials = (dir: string, alias: string, creds: { username: string; password: string }, pass: string) =>
+  encryptCredentialsFile(dir, alias, creds, pass, "IMAP");
+const decryptCredentials = (dir: string, alias: string, pass: string) =>
+  decryptCredentialsFile(dir, alias, pass, "IMAP");
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

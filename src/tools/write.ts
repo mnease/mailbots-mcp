@@ -4,18 +4,25 @@ import { loadAttachments } from "../security/attachment-loader.js";
 const sendCounts = new Map<string, { count: number; resetAt: number }>();
 const MAX_SENDS_PER_MINUTE = 10;
 
+/** Peek whether a send is allowed. Does not increment; call recordSuccessfulSend after a send that landed. */
 export function checkSendLimit(account: string): string | null {
+  const now = Date.now();
+  const entry = sendCounts.get(account);
+  if (!entry || now > entry.resetAt) return null;
+  if (entry.count >= MAX_SENDS_PER_MINUTE) {
+    return `Rate limit: maximum ${MAX_SENDS_PER_MINUTE} emails per minute per account. Try again in ${Math.ceil((entry.resetAt - now) / 1000)}s.`;
+  }
+  return null;
+}
+
+export function recordSuccessfulSend(account: string): void {
   const now = Date.now();
   const entry = sendCounts.get(account);
   if (!entry || now > entry.resetAt) {
     sendCounts.set(account, { count: 1, resetAt: now + 60_000 });
-    return null;
-  }
-  if (entry.count >= MAX_SENDS_PER_MINUTE) {
-    return `Rate limit: maximum ${MAX_SENDS_PER_MINUTE} emails per minute per account. Try again in ${Math.ceil((entry.resetAt - now) / 1000)}s.`;
+    return;
   }
   entry.count++;
-  return null;
 }
 
 export function clearSendLimit(account: string): void {
@@ -35,8 +42,8 @@ const fromSchema = {
     "Sender address, e.g. 'alias@example.com' or 'Name <alias@example.com>'. Must be a verified send-as alias (Gmail) or identity (JMAP) on the account, otherwise the call fails. Defaults to the account's primary address. Use list_send_as to see the options.",
 };
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "send_email",
     description: "Send a new email",
     inputSchema: {
@@ -55,7 +62,8 @@ registerTool(
       required: ["account", "to", "subject", "body"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
     const attachments = loadAttachments(args.attachments as string[] | undefined);
@@ -65,12 +73,13 @@ registerTool(
       cc: args.cc as string[] | undefined, bcc: args.bcc as string[] | undefined, html: args.html as boolean | undefined,
       attachments,
     });
+    recordSuccessfulSend(args.account as string);
     return { content: [{ type: "text", text: `Email sent. Message ID: ${id}` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "reply_email",
     description: "Reply to an email message",
     inputSchema: {
@@ -89,7 +98,8 @@ registerTool(
       required: ["account", "message_id", "body"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
     const attachments = loadAttachments(args.attachments as string[] | undefined);
@@ -102,12 +112,13 @@ registerTool(
       html: args.html as boolean | undefined,
       attachments,
     });
+    recordSuccessfulSend(args.account as string);
     return { content: [{ type: "text", text: `Reply sent. Message ID: ${id}` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "forward_email",
     description: "Forward an email message to new recipients",
     inputSchema: {
@@ -124,7 +135,8 @@ registerTool(
       required: ["account", "message_id", "to"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
     const attachments = loadAttachments(args.attachments as string[] | undefined);
@@ -134,12 +146,13 @@ registerTool(
       message: args.message as string | undefined, html: args.html as boolean | undefined,
       attachments,
     });
+    recordSuccessfulSend(args.account as string);
     return { content: [{ type: "text", text: `Forwarded. Message ID: ${id}` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "create_draft",
     description: "Create a draft email",
     inputSchema: {
@@ -159,7 +172,8 @@ registerTool(
       required: ["account", "to", "subject", "body"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.createDraft(args.to as string[], args.subject as string, args.body as string, {
@@ -169,5 +183,5 @@ registerTool(
       attachments,
     });
     return { content: [{ type: "text", text: `Draft created. Draft ID: ${id}` }] };
-  }
-);
+  },
+});

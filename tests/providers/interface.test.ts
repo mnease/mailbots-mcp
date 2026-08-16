@@ -17,8 +17,10 @@ describe("MailProvider interface", () => {
       unsubscribe: true,
       attachments: true,
       inboxSummary: true,
+      draftsEdit: true,
+      sendAs: true,
     };
-    expect(Object.keys(caps)).toHaveLength(8);
+    expect(Object.keys(caps)).toHaveLength(10);
   });
 
   it("EmailSummary has required fields", () => {

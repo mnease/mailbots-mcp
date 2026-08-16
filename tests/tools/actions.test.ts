@@ -9,6 +9,7 @@ function createMockProvider(overrides: Partial<MailProvider> = {}): MailProvider
     capabilities: {
       threads: true, filters: true, templates: true, signatures: true,
       vacation: true, unsubscribe: true, attachments: true, inboxSummary: true,
+      draftsEdit: true, sendAs: true,
     },
     markRead: vi.fn().mockResolvedValue(undefined),
     starMessage: vi.fn().mockResolvedValue(undefined),

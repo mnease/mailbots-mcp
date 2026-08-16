@@ -1,8 +1,8 @@
 import { registerTool, sanitizeErrorMessage } from "./registry.js";
 import { fenceEmailContent, fenceEmailHeader, redactTokens } from "../security/sanitize.js";
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "mark_read",
     description: "Mark an email as read or unread",
     inputSchema: {
@@ -15,16 +15,17 @@ registerTool(
       required: ["account", "message_id"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const read = (args.read as boolean | undefined) ?? true;
     await provider.markRead(args.message_id as string, read);
     return { content: [{ type: "text", text: `Message ${args.message_id} marked as ${read ? "read" : "unread"}.` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "star_email",
     description: "Star or unstar an email",
     inputSchema: {
@@ -37,16 +38,17 @@ registerTool(
       required: ["account", "message_id"],
     },
   },
-  async (args, ctx) => {
+  group: "organize",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const starred = (args.starred as boolean | undefined) ?? true;
     await provider.starMessage(args.message_id as string, starred);
     return { content: [{ type: "text", text: `Message ${args.message_id} ${starred ? "starred" : "unstarred"}.` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "archive_email",
     description: "Archive an email (remove from inbox). Gmail removes the INBOX label; IMAP moves to the Archive folder; JMAP moves out of the inbox mailbox.",
     inputSchema: {
@@ -58,15 +60,16 @@ registerTool(
       required: ["account", "message_id"],
     },
   },
-  async (args, ctx) => {
+  group: "organize",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     await provider.archiveMessage(args.message_id as string);
     return { content: [{ type: "text", text: `Message ${args.message_id} archived.` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "list_drafts",
     description: "List drafts for an account",
     inputSchema: {
@@ -78,7 +81,8 @@ registerTool(
       required: ["account"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const drafts = await provider.listDrafts((args.max_results as number) ?? 20);
     if (drafts.length === 0) return { content: [{ type: "text", text: "No drafts." }] };
@@ -86,11 +90,11 @@ registerTool(
       `- **${d.id}** | ${fenceEmailHeader(d.to.join(", "), "to")} | ${fenceEmailContent(d.subject, "subject")} (${d.updatedAt})`
     );
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "send_draft",
     description: "Send an existing draft as-is. For Gmail/JMAP the draft is finalised and submitted; for IMAP the message is sent via SMTP and removed from the Drafts folder.",
     inputSchema: {
@@ -102,15 +106,16 @@ registerTool(
       required: ["account", "draft_id"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.sendDraft(args.draft_id as string);
     return { content: [{ type: "text", text: `Draft sent. Message ID: ${id}` }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "count_unread_by_label",
     description: "Count unread messages per label/folder. Useful for deciding where to look first.",
     inputSchema: {
@@ -119,17 +124,18 @@ registerTool(
       required: ["account"],
     },
   },
-  async (args, ctx) => {
+  group: "organize",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const counts = await provider.countUnreadByLabel();
     if (counts.length === 0) return { content: [{ type: "text", text: "No unread messages in any label." }] };
     const lines = counts.map((c) => `- **${c.name}**: ${c.unread} unread`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "emails_since",
     description: "List messages received after a given timestamp. Use for polling new mail since a last-check marker.",
     inputSchema: {
@@ -143,7 +149,8 @@ registerTool(
       required: ["account", "since"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const results = await provider.messagesSince(
       args.since as string,
@@ -155,11 +162,11 @@ registerTool(
       `- **${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")} (${m.date})`
     );
     return { content: [{ type: "text", text: lines.join("\n") }] };
-  }
-);
+  },
+});
 
-registerTool(
-  {
+registerTool({
+  definition: {
     name: "multi_account_search",
     description: "Run the same search across all configured accounts in parallel. Returns results grouped by account alias.",
     inputSchema: {
@@ -171,7 +178,8 @@ registerTool(
       required: ["query"],
     },
   },
-  async (args, ctx) => {
+  group: "core",
+  handler: async (args, ctx) => {
     const accounts = Object.keys(ctx.accountManager.listAccounts());
     if (accounts.length === 0) return { content: [{ type: "text", text: "No accounts configured." }] };
     const max = (args.max_results as number) ?? 10;
@@ -203,5 +211,5 @@ registerTool(
       sections.push(`## ${alias}\n\n${lines.join("\n")}`);
     }
     return { content: [{ type: "text", text: sections.join("\n\n") }] };
-  }
-);
+  },
+});

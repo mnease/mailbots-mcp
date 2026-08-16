@@ -106,9 +106,7 @@ describe("ImapProvider", () => {
     mockImap.messageMove.mockResolvedValue(true);
 
     await provider.trashMessages(["1", "2", "3"]);
-    expect(mockImap.messageMove).toHaveBeenCalledWith(1, "Trash", { uid: true });
-    expect(mockImap.messageMove).toHaveBeenCalledWith(2, "Trash", { uid: true });
-    expect(mockImap.messageMove).toHaveBeenCalledWith(3, "Trash", { uid: true });
+    expect(mockImap.messageMove).toHaveBeenCalledWith("1,2,3", "Trash", { uid: true });
   });
 
   it("trashMessages falls back to standard Trash folder name when no specialUse match", async () => {
@@ -118,19 +116,15 @@ describe("ImapProvider", () => {
     mockImap.messageMove.mockResolvedValue(true);
 
     await provider.trashMessages(["5"]);
-    expect(mockImap.messageMove).toHaveBeenCalledWith(5, "Trash", { uid: true });
+    expect(mockImap.messageMove).toHaveBeenCalledWith("5", "Trash", { uid: true });
   });
 
-  it("trashMessages processes sequentially", async () => {
+  it("trashMessages batches UIDs in one MOVE per folder", async () => {
     mockImap.list.mockResolvedValue([{ path: "[Gmail]/Trash", specialUse: "\\Trash" }]);
-    const order: number[] = [];
-    mockImap.messageMove.mockImplementation(async (uid: any) => {
-      order.push(typeof uid === "string" ? parseInt(uid) : uid);
-      return true;
-    });
-
+    mockImap.messageMove.mockResolvedValue(true);
     await provider.trashMessages(["1", "2", "3"]);
-    expect(order).toEqual([1, 2, 3]);
+    expect(mockImap.messageMove).toHaveBeenCalledTimes(1);
+    expect(mockImap.messageMove).toHaveBeenCalledWith("1,2,3", "[Gmail]/Trash", { uid: true });
   });
 
   it("createDraft uses discovered drafts folder", async () => {
@@ -138,20 +132,98 @@ describe("ImapProvider", () => {
       { path: "INBOX", specialUse: "\\Inbox" },
       { path: "Drafts", specialUse: "\\Drafts" },
     ]);
-    mockImap.append.mockResolvedValue(undefined);
+    mockImap.append.mockResolvedValue({ uid: 88 });
 
     const id = await provider.createDraft(["a@b.com"], "Test subject", "Draft body");
-    expect(id).toMatch(/^draft-/);
+    expect(id).toBe("Drafts:88");
     expect(mockImap.getMailboxLock).toHaveBeenCalledWith("Drafts");
     expect(mockImap.append).toHaveBeenCalledWith("Drafts", expect.any(Buffer), ["\\Draft"]);
   });
 
   it("createDraft falls back to standard Drafts folder name when no specialUse match", async () => {
     mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }]);
-    mockImap.append.mockResolvedValue(undefined);
+    mockImap.append.mockResolvedValue({ uid: 3 });
 
-    await provider.createDraft([], "subj", "body");
+    const id = await provider.createDraft([], "subj", "body");
+    expect(id).toBe("Drafts:3");
     expect(mockImap.append).toHaveBeenCalledWith("Drafts", expect.any(Buffer), ["\\Draft"]);
+  });
+
+  it("sendDraft can send the id createDraft just returned", async () => {
+    mockImap.list.mockResolvedValue([{ path: "Drafts", specialUse: "\\Drafts" }]);
+    mockImap.append.mockResolvedValue({ uid: 44 });
+    mockImap.fetchOne.mockResolvedValue({
+      source: Buffer.from("From: a\r\nTo: b@c.com\r\nSubject: s\r\n\r\nbody"),
+      envelope: { to: [{ address: "b@c.com" }], cc: [], bcc: [] },
+    });
+    const id = await provider.createDraft(["b@c.com"], "s", "body");
+    const sent = await provider.sendDraft(id);
+    expect(sent).toContain("test@example.com");
+    expect(mockImap.fetchOne).toHaveBeenCalledWith(44, expect.anything(), { uid: true });
+  });
+
+  it("hasAttachments is false for multipart/alternative with no files", async () => {
+    mockImap.search.mockResolvedValue([1]);
+    mockImap.fetchAll.mockResolvedValue([{
+      uid: 1,
+      envelope: { from: [{ address: "a@x" }], to: [], subject: "s", date: new Date(0) },
+      flags: new Set(),
+      bodyStructure: {
+        type: "multipart/alternative",
+        childNodes: [
+          { type: "text/plain", part: "1" },
+          { type: "text/html", part: "2" },
+        ],
+      },
+    }]);
+    const results = await provider.searchMessages("s");
+    expect(results[0].hasAttachments).toBe(false);
+  });
+
+  it("surfaces IMAP flags as labels on summaries", async () => {
+    mockImap.search.mockResolvedValue([2]);
+    mockImap.fetchAll.mockResolvedValue([{
+      uid: 2,
+      envelope: { from: [{ address: "a@x" }], to: [], subject: "s", date: new Date(0) },
+      flags: new Set(["\\Flagged"]),
+      bodyStructure: {},
+    }]);
+    const results = await provider.searchMessages("s");
+    expect(results[0].labels).toContain("STARRED");
+    expect(results[0].labels).toContain("UNREAD");
+  });
+
+  it("replyToMessage sets In-Reply-To and References on SMTP", async () => {
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 9,
+      envelope: {
+        from: [{ address: "orig@x.com" }],
+        to: [{ address: "me@x.com" }],
+        cc: [],
+        subject: "Hello",
+        messageId: "<orig@x>",
+      },
+      bodyStructure: {},
+    });
+    await provider.replyToMessage("INBOX:9", "Thanks");
+    expect(mockTransport.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      inReplyTo: "<orig@x>",
+      references: "<orig@x>",
+    }));
+  });
+
+  it("undoBulk trash moves messages from Trash back to the recorded folder", async () => {
+    mockImap.list.mockResolvedValue([{ path: "Trash", specialUse: "\\Trash" }]);
+    mockImap.messageMove.mockResolvedValue(true);
+    await provider.undoBulk({
+      kind: "trash",
+      messageIds: ["Trash:101"],
+      addLabels: [],
+      removeLabels: [],
+      restore: [{ id: "Trash:101", folder: "INBOX" }],
+    });
+    expect(mockImap.getMailboxLock).toHaveBeenCalledWith("Trash");
+    expect(mockImap.messageMove).toHaveBeenCalledWith("101", "INBOX", { uid: true });
   });
 
   it("findSpecialFolder caches results to avoid repeated list calls", async () => {
@@ -176,8 +248,8 @@ describe("ImapProvider", () => {
     const lockedFolders = mockImap.getMailboxLock.mock.calls.map(([folder]: any) => folder);
     expect(lockedFolders).toContain("Sent");
     expect(lockedFolders).toContain("Archive");
-    expect(mockImap.messageMove).toHaveBeenCalledWith(42, "Trash", { uid: true });
-    expect(mockImap.messageMove).toHaveBeenCalledWith(99, "Trash", { uid: true });
+    expect(mockImap.messageMove).toHaveBeenCalledWith("42", "Trash", { uid: true });
+    expect(mockImap.messageMove).toHaveBeenCalledWith("99", "Trash", { uid: true });
   });
 
   it("modifyLabels passes unknown labels through as IMAP keywords", async () => {

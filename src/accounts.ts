@@ -68,13 +68,17 @@ export class AccountManager {
     return account;
   }
 
-  addAccount(alias: string, config: AccountConfig): void {
+  assertAliasAvailable(alias: string): void {
     if (!ALIAS_PATTERN.test(alias)) {
       throw new Error(`Invalid alias "${alias}". Use only letters, numbers, hyphens, underscores.`);
     }
     if (this.data.accounts[alias]) {
       throw new Error(`Account "${alias}" already exists`);
     }
+  }
+
+  addAccount(alias: string, config: AccountConfig): void {
+    this.assertAliasAvailable(alias);
     this.data.accounts[alias] = config;
     ensureDir(join(this.configDir, "accounts", alias));
     this.save();

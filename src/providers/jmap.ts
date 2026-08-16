@@ -1,63 +1,16 @@
-// src/providers/jmap.ts
-import { stripCRLF, validateNoSSRF } from "../security/validation.js";
-import { ensureReplyPrefix, ensureForwardPrefix, extractAddress } from "./headers.js";
+import { stripCRLF } from "../security/validation.js";
+import { extractAddress } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo, Attachment, DraftSummary, UnreadCount, ExportedMessage,
+  DraftOptions, Attachment, DraftSummary, UnreadCount, ExportedMessage,
+  BulkUndoRequest, TrashResult,
 } from "./interface.js";
-
-interface JmapSession {
-  apiUrl: string;
-  downloadUrl: string;
-  uploadUrl: string;
-  accountId: string;
-}
-
-interface JmapAddress {
-  name?: string;
-  email: string;
-}
-
-/** Validate that a URL uses HTTPS and does not target private/internal networks. */
-function requireSecureUrl(url: string, context: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error(`${context}: invalid URL`);
-  }
-  if (parsed.protocol !== "https:") {
-    throw new Error(`${context}: HTTPS required, got ${parsed.protocol}`);
-  }
-  validateNoSSRF(url);
-}
-
-/**
- * Extract a readable body from a JMAP Email/get response, preferring plain
- * text when present and falling back to HTML for HTML-only messages.
- */
-function extractJmapBody(e: any): string {
-  const values = e.bodyValues ?? {};
-  const textPartId = e.textBody?.[0]?.partId;
-  if (textPartId && values[textPartId]?.value) {
-    return values[textPartId].value;
-  }
-  const htmlPartId = e.htmlBody?.[0]?.partId;
-  if (htmlPartId && values[htmlPartId]?.value) {
-    return values[htmlPartId].value;
-  }
-  return "";
-}
-
-function formatJmapAddress(addr: JmapAddress | undefined): string {
-  if (!addr) return "";
-  return addr.name ? `${addr.name} <${addr.email}>` : addr.email;
-}
-
-function formatJmapAddresses(addrs: JmapAddress[] | undefined): string[] {
-  return (addrs ?? []).map(formatJmapAddress).filter(Boolean);
-}
+import { forwardedBody, forwardSubject, replyRecipients, replySubject, threadingFor } from "./compose.js";
+import {
+  formatJmapAddresses, requireSecureUrl, toMessage, toSummary,
+  type JmapSession,
+} from "./jmap-parse.js";
 
 export class JmapProvider implements MailProvider {
   readonly type = "jmap";
@@ -65,6 +18,7 @@ export class JmapProvider implements MailProvider {
     threads: true, filters: false, templates: false,
     signatures: false, vacation: false, unsubscribe: false,
     attachments: true, inboxSummary: true,
+    draftsEdit: false, sendAs: false,
   };
 
   private session: JmapSession | null = null;
@@ -136,7 +90,14 @@ export class JmapProvider implements MailProvider {
       throw new Error(`JMAP API error: ${res.status}`);
     }
     const body = await res.json() as any;
-    return body.methodResponses;
+    const responses = body.methodResponses ?? [];
+    for (const item of responses) {
+      if (Array.isArray(item) && item[0] === "error") {
+        const err = item[1] ?? {};
+        throw new Error(`JMAP method error: ${err.type ?? "unknown"}${err.description ? ` — ${err.description}` : ""}`);
+      }
+    }
+    return responses;
   }
 
   async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
@@ -167,17 +128,7 @@ export class JmapProvider implements MailProvider {
     ]);
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    return emails.map((e: any) => ({
-      id: e.id,
-      threadId: e.threadId,
-      from: formatJmapAddress(e.from?.[0]),
-      to: formatJmapAddresses(e.to),
-      subject: e.subject ?? "",
-      snippet: e.preview ?? "",
-      date: e.receivedAt ?? "",
-      labels: Object.keys(e.mailboxIds ?? {}),
-      hasAttachments: e.hasAttachment ?? false,
-    }));
+    return emails.map(toSummary);
   }
 
   async findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]> {
@@ -199,6 +150,7 @@ export class JmapProvider implements MailProvider {
           "id", "threadId", "from", "to", "cc", "bcc", "replyTo",
           "subject", "preview", "receivedAt", "mailboxIds",
           "hasAttachment", "textBody", "htmlBody", "bodyValues", "attachments",
+          "messageId", "references",
         ],
         fetchTextBodyValues: true,
         fetchHTMLBodyValues: true,
@@ -207,32 +159,7 @@ export class JmapProvider implements MailProvider {
 
     const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
     if (list.length === 0) throw new Error(`Message ${messageId} not found`);
-    const e = list[0];
-
-    const bodyText = extractJmapBody(e);
-    const subject = e.subject ?? "";
-
-    return {
-      id: e.id,
-      threadId: e.threadId,
-      from: formatJmapAddress(e.from?.[0]),
-      to: formatJmapAddresses(e.to),
-      cc: formatJmapAddresses(e.cc),
-      bcc: formatJmapAddresses(e.bcc),
-      replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-      subject,
-      snippet: e.preview ?? "",
-      date: e.receivedAt ?? "",
-      labels: Object.keys(e.mailboxIds ?? {}),
-      hasAttachments: e.hasAttachment ?? false,
-      body: bodyText,
-      attachments: (e.attachments ?? []).map((a: any) => ({
-        id: a.blobId,
-        filename: a.name ?? "attachment",
-        mimeType: a.type ?? "application/octet-stream",
-        size: a.size ?? 0,
-      })),
-    };
+    return toMessage(list[0]);
   }
 
   async readThread(threadId: string): Promise<EmailThread> {
@@ -249,6 +176,7 @@ export class JmapProvider implements MailProvider {
           "id", "threadId", "from", "to", "cc", "bcc", "replyTo",
           "subject", "preview", "receivedAt", "mailboxIds",
           "hasAttachment", "textBody", "htmlBody", "bodyValues", "attachments",
+          "messageId", "references",
         ],
         fetchTextBodyValues: true,
         fetchHTMLBodyValues: true,
@@ -259,30 +187,7 @@ export class JmapProvider implements MailProvider {
     if (threads.length === 0) throw new Error(`Thread ${threadId} not found`);
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const messages: EmailMessage[] = emails.map((e: any) => {
-      const bodyText = extractJmapBody(e);
-      return {
-        id: e.id,
-        threadId: e.threadId,
-        from: formatJmapAddress(e.from?.[0]),
-        to: formatJmapAddresses(e.to),
-        cc: formatJmapAddresses(e.cc),
-        bcc: formatJmapAddresses(e.bcc),
-        replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-        subject: e.subject ?? "",
-        snippet: e.preview ?? "",
-        date: e.receivedAt ?? "",
-        labels: Object.keys(e.mailboxIds ?? {}),
-        hasAttachments: e.hasAttachment ?? false,
-        body: bodyText,
-        attachments: (e.attachments ?? []).map((a: any) => ({
-          id: a.blobId,
-          filename: a.name ?? "attachment",
-          mimeType: a.type ?? "application/octet-stream",
-          size: a.size ?? 0,
-        })),
-      };
-    });
+    const messages: EmailMessage[] = emails.map(toMessage);
 
     return {
       id: threadId,
@@ -327,17 +232,7 @@ export class JmapProvider implements MailProvider {
     ]);
 
     const emails = emailResponses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const recent = emails.map((e: any) => ({
-      id: e.id,
-      threadId: e.threadId,
-      from: formatJmapAddress(e.from?.[0]),
-      to: formatJmapAddresses(e.to),
-      subject: e.subject ?? "",
-      snippet: e.preview ?? "",
-      date: e.receivedAt ?? "",
-      labels: Object.keys(e.mailboxIds ?? {}),
-      hasAttachments: e.hasAttachment ?? false,
-    }));
+    const recent = emails.map(toSummary);
 
     return {
       total: inbox?.totalEmails ?? 0,
@@ -460,6 +355,8 @@ export class JmapProvider implements MailProvider {
       delete emailCreate.textBody;
     }
     if (attachmentParts) emailCreate.attachments = attachmentParts;
+    if (options?.inReplyTo) emailCreate.inReplyTo = [options.inReplyTo];
+    if (options?.references) emailCreate.references = options.references.split(/\s+/).filter(Boolean);
     const submission: any = { emailId: "#draft0" };
     if (identity.identityId) submission.identityId = identity.identityId;
     const responses = await this.apiCall([
@@ -467,25 +364,28 @@ export class JmapProvider implements MailProvider {
       ["EmailSubmission/set", { accountId: session.accountId, create: { sub0: submission } }, "1"],
     ]);
     const created = responses.find((r: any) => r[0] === "Email/set")?.[1]?.created?.draft0;
+    const submitted = responses.find((r: any) => r[0] === "EmailSubmission/set")?.[1];
+    if (!submitted?.created?.sub0) {
+      const notCreated = submitted?.notCreated?.sub0;
+      throw new Error(`JMAP submission failed${notCreated?.type ? `: ${notCreated.type}` : ""}`);
+    }
     return created?.id ?? "";
   }
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
     const original = await this.fetchMessage(messageId);
-    const replyAddress = original.replyTo || original.from;
-    const to = [replyAddress];
-    if (options?.replyAll) { to.push(...original.to, ...original.cc); }
-    const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { from: options?.from, cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
+    const thread = threadingFor(original);
+    return this.sendMessage(replyRecipients(original, options?.replyAll), replySubject(original.subject), body, {
+      from: options?.from, cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments,
+      inReplyTo: thread.inReplyTo, references: thread.references,
+    });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
     const original = await this.fetchMessage(messageId);
-    const fwdBody = options?.message
-      ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
-      : `---------- Forwarded message ----------\n${original.body}`;
-    const subject = ensureForwardPrefix(original.subject);
-    return this.sendMessage(to, subject, fwdBody, { from: options?.from, html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, forwardSubject(original.subject), forwardedBody(original, options?.message), {
+      from: options?.from, html: options?.html, attachments: options?.attachments,
+    });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
@@ -507,7 +407,12 @@ export class JmapProvider implements MailProvider {
       emailCreate.htmlBody = [{ value: body, type: "text/html" }];
       delete emailCreate.textBody;
     }
-    if (options?.inReplyTo) emailCreate.inReplyTo = options.inReplyTo;
+    if (options?.inReplyTo) {
+      const original = await this.fetchMessage(options.inReplyTo).catch(() => undefined);
+      const thread = original ? threadingFor(original) : { inReplyTo: options.inReplyTo };
+      if (thread.inReplyTo) emailCreate.inReplyTo = [thread.inReplyTo];
+      if (thread.references) emailCreate.references = thread.references.split(/\s+/).filter(Boolean);
+    }
     if (attachmentParts) emailCreate.attachments = attachmentParts;
     const responses = await this.apiCall([
       ["Email/set", { accountId: session.accountId, create: { draft0: emailCreate } }, "0"],
@@ -516,12 +421,46 @@ export class JmapProvider implements MailProvider {
     return created?.id ?? "";
   }
 
-  async trashMessages(messageIds: string[]): Promise<void> {
+  async trashMessages(messageIds: string[]): Promise<TrashResult[]> {
     const session = await this.ensureSession();
+    const current = await this.apiCall([
+      ["Email/get", { accountId: session.accountId, ids: messageIds, properties: ["id", "mailboxIds"] }, "0"],
+    ]);
+    const list = current.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    const previous = new Map<string, string[]>(
+      list.map((e: any) => [e.id, Object.keys(e.mailboxIds ?? {})]),
+    );
     const trashMailbox = await this.findMailboxByRole("trash");
     const update: Record<string, any> = {};
     for (const id of messageIds) {
       update[id] = { mailboxIds: { [trashMailbox.id]: true } };
+    }
+    await this.apiCall([
+      ["Email/set", { accountId: session.accountId, update }, "0"],
+    ]);
+    return messageIds.map((id) => ({ id, restoreMailboxIds: previous.get(id) ?? [] }));
+  }
+
+  async undoBulk(request: BulkUndoRequest): Promise<void> {
+    if (request.kind === "modify") {
+      await this.batchModifyLabels(request.messageIds, request.addLabels, request.removeLabels);
+      return;
+    }
+    const session = await this.ensureSession();
+    const trash = await this.findMailboxByRole("trash");
+    const update: Record<string, any> = {};
+    const restore = request.restore ?? request.messageIds.map((id) => ({ id, mailboxIds: [] as string[] }));
+    for (const item of restore) {
+      const mailboxes = item.mailboxIds ?? [];
+      const mailboxIds: Record<string, boolean> = {};
+      for (const m of mailboxes) {
+        if (m !== trash.id) mailboxIds[m] = true;
+      }
+      if (Object.keys(mailboxIds).length === 0) {
+        const inbox = await this.findMailboxByRole("inbox");
+        mailboxIds[inbox.id] = true;
+      }
+      update[item.id] = { mailboxIds };
     }
     await this.apiCall([
       ["Email/set", { accountId: session.accountId, update }, "0"],
@@ -581,11 +520,11 @@ export class JmapProvider implements MailProvider {
   async downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }> {
     const session = await this.ensureSession();
     const msg = await this.fetchMessage(messageId);
-    const attachment = msg.attachments.find(a => a.id === attachmentId);
+    const attachment = msg.attachments.find((a) => a.id === attachmentId || a.filename === attachmentId);
     if (!attachment) throw new Error(`Attachment ${attachmentId} not found`);
     const url = session.downloadUrl
       .replace("{accountId}", encodeURIComponent(session.accountId))
-      .replace("{blobId}", encodeURIComponent(attachmentId))
+      .replace("{blobId}", encodeURIComponent(attachment.id))
       .replace("{name}", encodeURIComponent(attachment.filename))
       .replace("{type}", encodeURIComponent(attachment.mimeType));
     requireSecureUrl(url, "JMAP download URL");
@@ -654,12 +593,14 @@ export class JmapProvider implements MailProvider {
 
   async sendDraft(draftId: string): Promise<string> {
     const session = await this.ensureSession();
-    // Submit the existing draft for delivery. JMAP EmailSubmission/set with
-    // onSuccessUpdateEmail clears the $draft keyword and moves it to Sent.
+    const draft = await this.fetchMessage(draftId);
+    const identity = await this.resolveIdentity(draft.from || this.email);
+    const submission: any = { emailId: draftId };
+    if (identity.identityId) submission.identityId = identity.identityId;
     const responses = await this.apiCall([
       ["EmailSubmission/set", {
         accountId: session.accountId,
-        create: { sub0: { emailId: draftId } },
+        create: { sub0: submission },
         onSuccessUpdateEmail: {
           [`#sub0`]: { "keywords/$draft": null },
         },
@@ -736,16 +677,6 @@ export class JmapProvider implements MailProvider {
       }, "1"],
     ]);
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    return emails.map((e: any) => ({
-      id: e.id,
-      threadId: e.threadId,
-      from: formatJmapAddress(e.from?.[0]),
-      to: formatJmapAddresses(e.to),
-      subject: e.subject ?? "",
-      snippet: e.preview ?? "",
-      date: e.receivedAt ?? "",
-      labels: Object.keys(e.mailboxIds ?? {}),
-      hasAttachments: e.hasAttachment ?? false,
-    }));
+    return emails.map(toSummary);
   }
 }
