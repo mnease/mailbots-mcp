@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.11.1 — 2026-08-16
+
+### Changed
+- npm publishes from GitHub Actions via Trusted Publishing (OIDC). No `NPM_TOKEN`.
+
 ## 0.11.0 — 2026-08-16
 
 ### Changed
