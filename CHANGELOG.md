@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.11.4 — 2026-08-16
+
+### Fixed
+- Grok two-step Gmail OAuth no longer starts a second login after Google already wrote `token.json`.
+
 ## 0.11.3 — 2026-08-16
 
 ### Changed

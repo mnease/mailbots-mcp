@@ -74,6 +74,13 @@ registerTool({
           rollbackDir,
         });
       }
+      const tokenPath = join(configDir, "accounts", alias, "token.json");
+      if (existsSync(tokenPath)) {
+        if (!ctx.accountManager.listAccounts()[alias]) {
+          ctx.accountManager.addAccount(alias, { provider: "gmail", email });
+        }
+        return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.` }] };
+      }
       try {
         const {
           authenticateGmail,
