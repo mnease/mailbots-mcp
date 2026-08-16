@@ -2,9 +2,12 @@
 
 ## Unreleased
 
+## 0.11.0 — 2026-08-16
+
 ### Changed
+- **Renamed to Mailbots-MCP.** Package, binary, MCP server name, default config dir (`~/.mailbots-mcp`), download dir, and env vars (`MAILBOTS_MCP_*`) use the new name. Existing `MAILBOX_MCP_*` env vars, `~/.mailbox-mcp`, and the `mailbox-mcp` binary still work.
 - Gmail-only tools (filters, templates, signatures, vacation, unsubscribe, send-as, draft update/delete) go through `GmailProvider` methods. There is no raw client hole on the provider.
-- `registerTool` takes the `MAILBOX_MCP_TOOLS` group at registration. `update_draft` and `delete_draft` live in `gmail-extras`, not `core`.
+- `registerTool` takes the `MAILBOTS_MCP_TOOLS` group at registration. `update_draft` and `delete_draft` live in `gmail-extras`, not `core`.
 - IMAP `create_draft` returns a `folder:uid` that `send_draft` can send.
 - `undo_bulk_op` after `bulk_trash` restores messages on Gmail, IMAP, and JMAP instead of swapping a `TRASH` label.
 

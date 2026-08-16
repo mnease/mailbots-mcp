@@ -16,6 +16,7 @@ const ctx = {
 
 afterEach(() => {
   delete process.env.MAILBOX_MCP_TOOLS;
+  delete process.env.MAILBOTS_MCP_TOOLS;
 });
 
 describe("tool groups", () => {
@@ -33,7 +34,8 @@ describe("tool groups", () => {
   });
 
   it("filters the tool list to the enabled groups", () => {
-    process.env.MAILBOX_MCP_TOOLS = "core";
+    process.env.MAILBOTS_MCP_TOOLS = "core";
+    delete process.env.MAILBOX_MCP_TOOLS;
     const names = getAllToolDefinitions().map((d) => d.name);
     expect(names).toContain("search_emails");
     expect(names).toContain("send_email");
@@ -53,10 +55,10 @@ describe("tool groups", () => {
   });
 
   it("rejects calls to tools in disabled groups", async () => {
-    process.env.MAILBOX_MCP_TOOLS = "core";
+    process.env.MAILBOTS_MCP_TOOLS = "core";
     const result = await handleToolCall("bulk_trash", { account: "personal", query: "x" }, ctx);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("MAILBOX_MCP_TOOLS");
+    expect(result.content[0].text).toContain("MAILBOTS_MCP_TOOLS");
   });
 
   it("still routes calls to enabled tools", async () => {

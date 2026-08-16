@@ -2,6 +2,7 @@ import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
+import { env } from "../identity.js";
 
 registerTool({
   definition: {
@@ -79,15 +80,15 @@ registerTool({
       const port = (args.port as number) ?? 993;
       const smtpHost = args.smtpHost as string;
       const smtpPort = (args.smtpPort as number) ?? 587;
-      const username = (args.username as string) || process.env.MAILBOX_MCP_IMAP_USERNAME;
-      const password = (args.password as string) || process.env.MAILBOX_MCP_IMAP_PASSWORD;
-      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+      const username = (args.username as string) || env("IMAP_USERNAME");
+      const password = (args.password as string) || env("IMAP_PASSWORD");
+      const passphrase = env("PASSPHRASE") ?? "";
 
       if (!host || !smtpHost || !username || !password) {
         return { content: [{ type: "text", text: "IMAP accounts require: host, smtpHost, username, and password" }], isError: true };
       }
       if (!passphrase) {
-        return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
+        return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOTS_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
       try {
@@ -103,16 +104,16 @@ registerTool({
 
     if (provider === "jmap") {
       const host = args.host as string;
-      const username = (args.username as string) || process.env.MAILBOX_MCP_JMAP_USERNAME;
-      const password = (args.password as string) || process.env.MAILBOX_MCP_JMAP_PASSWORD;
-      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+      const username = (args.username as string) || env("JMAP_USERNAME");
+      const password = (args.password as string) || env("JMAP_PASSWORD");
+      const passphrase = env("PASSPHRASE") ?? "";
       const sessionUrl = args.sessionUrl as string | undefined;
 
       if (!host || !username || !password) {
         return { content: [{ type: "text", text: "JMAP accounts require: host, username, and password" }], isError: true };
       }
       if (!passphrase) {
-        return { content: [{ type: "text", text: "JMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
+        return { content: [{ type: "text", text: "JMAP accounts require a passphrase for credential encryption. Set MAILBOTS_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
       if (sessionUrl) {

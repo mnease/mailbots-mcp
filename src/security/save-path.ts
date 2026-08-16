@@ -1,11 +1,14 @@
 import { resolve, dirname, join } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { DEFAULT_DOWNLOAD_DIR_NAME, LEGACY_DOWNLOAD_DIR_NAME } from "../identity.js";
 
-export const DEFAULT_DOWNLOAD_DIR = join(homedir(), "Downloads", "mailbox-mcp");
+export const DEFAULT_DOWNLOAD_DIR = join(homedir(), "Downloads", DEFAULT_DOWNLOAD_DIR_NAME);
+export const LEGACY_DOWNLOAD_DIR = join(homedir(), "Downloads", LEGACY_DOWNLOAD_DIR_NAME);
 
 export const ALLOWED_BASE_DIRS = [
   DEFAULT_DOWNLOAD_DIR,
+  LEGACY_DOWNLOAD_DIR,
   "/tmp",
 ];
 

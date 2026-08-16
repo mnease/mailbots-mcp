@@ -1,24 +1,24 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.jgalea/mailbox-mcp",
+  "name": "io.github.mnease/mailbots-mcp",
   "description": "Multi-account email MCP server for Gmail, IMAP, and JMAP: search, send, drafts, labels.",
   "repository": {
-    "url": "https://github.com/jgalea/mailbox-mcp",
+    "url": "https://github.com/mnease/mailbots-mcp",
     "source": "github"
   },
-  "version": "0.10.0",
+  "version": "0.11.0",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "mailbox-mcp",
-      "version": "0.10.0",
+      "identifier": "mailbots-mcp",
+      "version": "0.11.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "name": "MAILBOX_MCP_PASSPHRASE",
-          "description": "Passphrase used to encrypt IMAP/JMAP credentials at rest. Required for IMAP and JMAP accounts.",
+          "name": "MAILBOTS_MCP_PASSPHRASE",
+          "description": "Passphrase used to encrypt IMAP/JMAP credentials at rest. Required for IMAP and JMAP accounts. MAILBOX_MCP_PASSPHRASE is still accepted.",
           "format": "string",
           "isSecret": true,
           "isRequired": false

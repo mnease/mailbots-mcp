@@ -1,8 +1,8 @@
 <div align="center">
 
-# mailbox-mcp
+# Mailbots-MCP
 
-[![npm](https://img.shields.io/badge/NPM-mailbox--mcp-CB3837?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/mailbox-mcp)
+[![npm](https://img.shields.io/badge/NPM-mailbots--mcp-CB3837?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/mailbots-mcp)
 [![License](https://img.shields.io/badge/LICENSE-MIT-5C9E31?style=for-the-badge)](LICENSE)
 [![Built by](https://img.shields.io/badge/BUILT%20BY-AGENTVANIA-8A2BE2?style=for-the-badge)](https://agentvania.com)
 
@@ -10,7 +10,7 @@
 
 </div>
 
-mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects your email to Claude Code, Cursor, Windsurf, or any AI tool that supports the Model Context Protocol. Instead of switching between your terminal and Gmail, you ask the AI to find that invoice, summarize a thread, or draft a reply — and it does.
+Mailbots-MCP is an [MCP server](https://modelcontextprotocol.io) that connects your email to Claude Code, Cursor, Windsurf, or any AI tool that supports the Model Context Protocol. Instead of switching between your terminal and Gmail, you ask the AI to find that invoice, summarize a thread, or draft a reply — and it does.
 
 **What makes this different from the 60+ other email MCP servers:**
 
@@ -29,29 +29,29 @@ Add to your Claude Code MCP config (`~/.claude.json`). The package runs straight
 ```json
 {
   "mcpServers": {
-    "mailbox": {
+    "mailbots": {
       "command": "npx",
-      "args": ["-y", "mailbox-mcp"],
+      "args": ["-y", "mailbots-mcp"],
       "env": {
-        "MAILBOX_MCP_PASSPHRASE": "a-long-random-passphrase"
+        "MAILBOTS_MCP_PASSPHRASE": "a-long-random-passphrase"
       }
     }
   }
 }
 ```
 
-`MAILBOX_MCP_PASSPHRASE` is the passphrase used to encrypt IMAP/JMAP credentials at rest; it's required before adding an IMAP or JMAP account, and unused for Gmail-only setups.
+`MAILBOTS_MCP_PASSPHRASE` is the passphrase used to encrypt IMAP/JMAP credentials at rest; it's required before adding an IMAP or JMAP account, and unused for Gmail-only setups. The older `MAILBOX_MCP_PASSPHRASE` name is still accepted.
 
 <details>
 <summary>From source instead</summary>
 
 ```bash
-git clone https://github.com/jgalea/mailbox-mcp.git
-cd mailbox-mcp
+git clone https://github.com/mnease/mailbots-mcp.git
+cd mailbots-mcp
 npm install && npm run build
 ```
 
-Then point the config at the build with `"command": "node", "args": ["/path/to/mailbox-mcp/dist/server.js"]`.
+Then point the config at the build with `"command": "node", "args": ["/path/to/mailbots-mcp/dist/server.js"]`.
 </details>
 
 ### Add a Gmail Account
@@ -74,13 +74,13 @@ Then point the config at the build with `"command": "node", "args": ["/path/to/m
 2. **Application type**: Desktop app
 3. Click **Create**
 4. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials), find your client, and click the download icon to get the JSON
-5. Save the file as `~/.mailbox-mcp/oauth-keys.json`
+5. Save the file as `~/.mailbots-mcp/oauth-keys.json`
 
 #### 4. Authenticate
 
 In Claude Code, run: `authenticate alias="personal" provider="gmail" email="you@gmail.com"`
 
-This opens a browser window to complete the OAuth flow. Your tokens are stored locally in `~/.mailbox-mcp/accounts/`.
+This opens a browser window to complete the OAuth flow. Your tokens are stored locally in `~/.mailbots-mcp/accounts/`. If you already have `~/.mailbox-mcp`, that directory is still used.
 
 ### Add an IMAP Account
 
@@ -173,11 +173,11 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 
 ## Choosing which tools load
 
-49 tool schemas cost roughly 6,000 tokens in clients that load every definition into context. In everyday use a handful of tools do most of the work, so you can expose only the groups you need with `MAILBOX_MCP_TOOLS` (comma-separated). Unset means everything loads.
+49 tool schemas cost roughly 6,000 tokens in clients that load every definition into context. In everyday use a handful of tools do most of the work, so you can expose only the groups you need with `MAILBOTS_MCP_TOOLS` (comma-separated). Unset means everything loads. `MAILBOX_MCP_TOOLS` is still accepted.
 
 ```json
 "env": {
-  "MAILBOX_MCP_TOOLS": "core,attachments"
+  "MAILBOTS_MCP_TOOLS": "core,attachments"
 }
 ```
 

@@ -10,7 +10,7 @@ registerTool({
       properties: {
         account: { type: "string", description: "Account alias" },
         message_id: { type: "string", description: "Message ID" },
-        save_to: { type: "string", description: `Directory to save to (default ~/Downloads/mailbox-mcp). Allowed: ~/Downloads/mailbox-mcp or /tmp.` },
+        save_to: { type: "string", description: `Directory to save to (default ~/Downloads/mailbots-mcp). Allowed: ~/Downloads/mailbots-mcp or /tmp.` },
       },
       required: ["account", "message_id"],
     },
@@ -33,7 +33,7 @@ registerTool({
       properties: {
         account: { type: "string", description: "Account alias" },
         thread_id: { type: "string", description: "Thread ID" },
-        save_to: { type: "string", description: `Directory to save to (default ~/Downloads/mailbox-mcp). Allowed: ~/Downloads/mailbox-mcp or /tmp.` },
+        save_to: { type: "string", description: `Directory to save to (default ~/Downloads/mailbots-mcp). Allowed: ~/Downloads/mailbots-mcp or /tmp.` },
       },
       required: ["account", "thread_id"],
     },

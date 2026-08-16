@@ -3,7 +3,6 @@
 import { readFileSync, appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -14,10 +13,11 @@ import { AccountManager } from "./accounts.js";
 import { getAllToolDefinitions, handleToolCall } from "./tools/registry.js";
 import { ProviderFactory } from "./providers/factory.js";
 import { redactTokens } from "./security/sanitize.js";
+import { PACKAGE_NAME, defaultConfigDir } from "./identity.js";
 
 // Lightweight lifecycle log so silent disconnects leave a paper trail.
-// Lives in ~/.mailbox-mcp/debug.log with a 1MB rotation cap.
-const LOG_DIR = join(homedir(), ".mailbox-mcp");
+// Lives in ~/.mailbots-mcp/debug.log (or ~/.mailbox-mcp if that is the live config dir).
+const LOG_DIR = defaultConfigDir();
 const LOG_PATH = join(LOG_DIR, "debug.log");
 const LOG_MAX_BYTES = 1024 * 1024;
 
@@ -65,7 +65,7 @@ function readPackageVersion(): string {
 }
 
 const server = new Server(
-  { name: "mailbox-mcp", version: readPackageVersion() },
+  { name: PACKAGE_NAME, version: readPackageVersion() },
   { capabilities: { tools: {} } }
 );
 
@@ -205,7 +205,7 @@ async function main() {
   transport.onerror = (err: unknown) => { logEvent("transport-error", String(err)); };
   await server.connect(transport);
   logEvent("start", `version=${readPackageVersion()} ppid=${INITIAL_PPID}`);
-  console.error("mailbox-mcp server running on stdio");
+  console.error("mailbots-mcp server running on stdio");
 
   // Heartbeat + parent-process watchdog. Two jobs:
   //   1. Low-rate alive marker in the debug log so we can tell post-hoc whether

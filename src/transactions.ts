@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, statSync, renameSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { defaultConfigDir, env } from "./identity.js";
 
 // Append-only log of reversible bulk operations. Each line is a JSON record of
 // the IDs touched and what changed, so a later `undo_bulk_op` call can mint
@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 const LOG_MAX_BYTES = 50 * 1024 * 1024; // 50MB — large because IDs are bulky.
 
 function logDir(): string {
-  return process.env.MAILBOX_MCP_LOG_DIR || join(homedir(), ".mailbox-mcp");
+  return env("LOG_DIR") || defaultConfigDir();
 }
 function logPath(): string {
   return join(logDir(), "transactions.jsonl");

@@ -1,6 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MailProvider, ProviderCapabilities } from "../providers/interface.js";
 import type { AccountManager } from "../accounts.js";
+import { env, envDisplay } from "../identity.js";
 
 export interface ToolContext {
   accountManager: AccountManager;
@@ -49,7 +50,7 @@ export function registeredToolGroups(): Record<string, ToolGroup> {
 }
 
 function enabledGroups(): Set<string> | null {
-  const raw = process.env.MAILBOX_MCP_TOOLS?.trim();
+  const raw = env("TOOLS")?.trim();
   if (!raw) return null;
   return new Set(raw.split(",").map((g) => g.trim().toLowerCase()).filter(Boolean));
 }
@@ -81,7 +82,7 @@ export async function handleToolCall(
     return {
       content: [{
         type: "text",
-        text: `Tool "${name}" is disabled: its group "${tool.group}" is not in MAILBOX_MCP_TOOLS (currently "${process.env.MAILBOX_MCP_TOOLS}").`,
+        text: `Tool "${name}" is disabled: its group "${tool.group}" is not in ${envDisplay("TOOLS")} (currently "${env("TOOLS")}").`,
       }],
       isError: true,
     };

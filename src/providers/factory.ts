@@ -4,6 +4,7 @@ import type { MailProvider } from "./interface.js";
 import { getGmailClient } from "../auth/gmail-oauth.js";
 import { decryptCredentialsFile } from "../auth/credentials.js";
 import { redactTokens } from "../security/sanitize.js";
+import { env } from "../identity.js";
 
 export class ProviderFactory {
   private cache = new Map<string, MailProvider>();
@@ -48,9 +49,9 @@ export class ProviderFactory {
     if (config.provider === "imap") {
       const { ImapFlow } = await import("imapflow");
       const { createTransport } = await import("nodemailer");
-      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
+      const passphrase = env("PASSPHRASE");
       if (!passphrase) {
-        throw new Error(`IMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
+        throw new Error(`IMAP account "${alias}" requires MAILBOTS_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
       }
       const creds = decryptCredentialsFile(configDir, alias, passphrase, "IMAP");
 
@@ -91,9 +92,9 @@ export class ProviderFactory {
     }
 
     if (config.provider === "jmap") {
-      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
+      const passphrase = env("PASSPHRASE");
       if (!passphrase) {
-        throw new Error(`JMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
+        throw new Error(`JMAP account "${alias}" requires MAILBOTS_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
       }
       const creds = decryptCredentialsFile(configDir, alias, passphrase, "JMAP");
       const { JmapProvider } = await import("./jmap.js");

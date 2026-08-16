@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { ensureDir, secureWriteFile } from "./security/permissions.js";
+import { defaultConfigDir } from "./identity.js";
 
 export interface GmailAccountConfig {
   provider: "gmail";
@@ -38,7 +38,7 @@ export class AccountManager {
   private data: AccountsFile;
 
   constructor(configDir?: string) {
-    this.configDir = configDir ?? join(homedir(), ".mailbox-mcp");
+    this.configDir = configDir ?? defaultConfigDir();
     this.configPath = join(this.configDir, "accounts.json");
     ensureDir(this.configDir);
     this.data = this.load();

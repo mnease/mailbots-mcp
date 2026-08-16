@@ -280,7 +280,7 @@ describe("GmailProvider", () => {
     mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [] } });
     await provider.listTemplates();
     const q = mockGmail.users.messages.list.mock.calls[0][0].q as string;
-    expect(q).toBe("in:drafts label:mailbox-mcp-template");
+    expect(q).toBe("in:drafts (label:mailbots-mcp-template OR label:mailbox-mcp-template)");
     expect(q).not.toContain("subject:[TEMPLATE");
   });
 

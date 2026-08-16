@@ -694,7 +694,10 @@ export class GmailProvider implements MailProvider {
 
   async listTemplates(): Promise<EmailSummary[]> {
     try {
-      return await this.searchMessages(`in:drafts label:${TEMPLATE_LABEL}`, 50);
+      return await this.searchMessages(
+        `in:drafts (label:${TEMPLATE_LABEL} OR label:${LEGACY_TEMPLATE_LABEL})`,
+        50,
+      );
     } catch {
       return [];
     }
@@ -716,7 +719,8 @@ export class GmailProvider implements MailProvider {
   }
 }
 
-const TEMPLATE_LABEL = "mailbox-mcp-template";
+const TEMPLATE_LABEL = "mailbots-mcp-template";
+const LEGACY_TEMPLATE_LABEL = "mailbox-mcp-template";
 
 export interface GmailFilter {
   id: string;

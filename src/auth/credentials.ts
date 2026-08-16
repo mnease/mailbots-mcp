@@ -55,7 +55,7 @@ export function decryptCredentialsFile(
   context: string,
 ): StoredCredentials {
   if (!passphrase) {
-    throw new Error(`A passphrase is required to decrypt ${context} credentials. Set MAILBOX_MCP_PASSPHRASE or pass it directly.`);
+    throw new Error(`A passphrase is required to decrypt ${context} credentials. Set MAILBOTS_MCP_PASSPHRASE or pass it directly.`);
   }
 
   const credPath = join(configDir, "accounts", alias, "credentials.json");

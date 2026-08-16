@@ -73,7 +73,7 @@ registerTool({
 });
 
 registerTool({
-  definition: { name: "save_template", description: "Save an email template as a Gmail draft labelled mailbox-mcp-template",
+  definition: { name: "save_template", description: "Save an email template as a Gmail draft labelled mailbots-mcp-template",
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" }, name: { type: "string", description: "Template name" },
       subject: { type: "string", description: "Template subject" }, body: { type: "string", description: "Template body" },

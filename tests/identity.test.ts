@@ -1,0 +1,35 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { env, envDisplay } from "../src/identity.js";
+
+describe("identity env", () => {
+  const keys = ["MAILBOTS_MCP_PASSPHRASE", "MAILBOX_MCP_PASSPHRASE", "MAILBOTS_MCP_TOOLS", "MAILBOX_MCP_TOOLS"];
+  const saved: Record<string, string | undefined> = {};
+
+  afterEach(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    for (const k of keys) delete saved[k];
+  });
+
+  function stash(...names: string[]) {
+    for (const n of names) saved[n] = process.env[n];
+  }
+
+  it("prefers MAILBOTS_MCP_ over the legacy MAILBOX_MCP_ name", () => {
+    stash("MAILBOTS_MCP_PASSPHRASE", "MAILBOX_MCP_PASSPHRASE");
+    process.env.MAILBOTS_MCP_PASSPHRASE = "new";
+    process.env.MAILBOX_MCP_PASSPHRASE = "old";
+    expect(env("PASSPHRASE")).toBe("new");
+    expect(envDisplay("PASSPHRASE")).toBe("MAILBOTS_MCP_PASSPHRASE");
+  });
+
+  it("falls back to MAILBOX_MCP_ when the new name is unset", () => {
+    stash("MAILBOTS_MCP_PASSPHRASE", "MAILBOX_MCP_PASSPHRASE");
+    delete process.env.MAILBOTS_MCP_PASSPHRASE;
+    process.env.MAILBOX_MCP_PASSPHRASE = "legacy";
+    expect(env("PASSPHRASE")).toBe("legacy");
+    expect(envDisplay("PASSPHRASE")).toBe("MAILBOX_MCP_PASSPHRASE");
+  });
+});
